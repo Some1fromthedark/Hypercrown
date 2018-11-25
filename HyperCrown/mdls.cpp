@@ -5185,13 +5185,17 @@ bool getDaeJoints(const aiScene *scene, vector<JointRelative> &joints, unsigned 
 		{
 			// Use the first bone of mesh 0 to determine the skeleton to use
 			currentNode = scene->mRootNode->FindNode(scene->mMeshes[0]->mBones[0]->mName.data);
-			for (nextNode = currentNode; nextNode && nextNode != scene->mRootNode; currentNode = parentNode)
+			for (nextNode = currentNode; nextNode && nextNode != scene->mRootNode;)
 			{
 				parentNode = currentNode->mParent;
 				nextNode = parentNode;
 				for (unsigned int i = 0; nextNode && i < (startDepth + 1); i++)
 				{
 					nextNode = nextNode->mParent;
+				}
+				if (nextNode)
+				{
+					currentNode = parentNode;
 				}
 			}
 		}

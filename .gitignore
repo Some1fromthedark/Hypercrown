@@ -1,1 +1,9 @@
 hgignore
+.hg/*
+.vs/*
+HyperCrown/Debug/*
+HyperCrown/Models/*
+HyperCrown/Release/*
+HyperCrown/Test/*
+Debug/*
+Release/*
