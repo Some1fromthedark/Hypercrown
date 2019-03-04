@@ -1,31 +1,35 @@
 #include"mdls.h"
 
-bool assimpTest()
+// Read the contents of a binary file and store it as a string
+bool binaryFileRead(string filename, string &dat)
 {
-	bool valid = true;
-	Assimp::Importer importer;
-	string filename = "SoraProg.dae", dat = "";
-	const aiScene *scene;
+	bool valid = true, eof;
+	char byte;
 	ifstream in;
-	unsigned int fileLen;
+	// Clear the output
+	dat = "";
+	// Open the input file
 	in.open(filename, ifstream::binary);
-	in.seekg(0, in.end);
-	fileLen = (unsigned int)in.tellg();
-	in.seekg(0, in.beg);
-	char *w = new char[fileLen];
-	in.read(w, fileLen);
-	dat = string(w, fileLen);
-	delete[]w;
-	//scene = importer.ReadFile(filename, 0);
-	scene = importer.ReadFileFromMemory(dat.c_str(), dat.length(), 0);
-	if (!scene)
+	// Make sure it opened successfully
+	if (in.is_open())
 	{
-		cout << importer.GetErrorString() << endl;
-		valid = false;
+		// Read each byte from the file
+		do
+		{
+			in.read(&byte, 1);
+			eof = !in.eof();
+			if (eof)
+			{
+				// Store the read bytes in the string
+				dat += byte;
+			}
+		} while (eof);
+		// Close the input file
+		in.close();
 	}
 	else
 	{
-		;
+		valid = false;
 	}
 	return valid;
 }
@@ -34,13 +38,12 @@ bool assimpTest()
 string convertMesh(string raw, string inputFormat, string outputFormat, AddInfo optionalVals)
 {
 	// Declare variables
-	bool valid, normalize;
-	float adjusts[numDims], max;
+	bool valid, normalize, flipUVs, combineMesh, swapChiral, shadow;
 	string converted;
 	vector<JointRelative> joints;
-	vector<VertexRelative> vertsR;
-	vector<VertexGlobal> vertsG;
-	vector<Face> faces;
+	vector<vector<VertexRelative>> vertsR;
+	vector<vector<VertexGlobal>> vertsG;
+	vector<vector<Face>> faces;
 	vector<Animation> anims;
 	// Declare variables for using assimp importers
 	Assimp::Importer importer;
@@ -57,6 +60,39 @@ string convertMesh(string raw, string inputFormat, string outputFormat, AddInfo 
 	{
 		// Default to not normalizing
 		normalize = false;
+	}
+	// Check if there is a value for the flipUVs flag provided
+	if (optionalVals.additionalBools.size() > addBoolIndex)
+	{
+		// Store the provided value
+		flipUVs = optionalVals.additionalBools[addBoolIndex++];
+	}
+	else
+	{
+		// Default to not flipping
+		flipUVs = false;
+	}
+	// Check if there is a value for the combineMeshes flag provided
+	if (optionalVals.additionalBools.size() > addBoolIndex)
+	{
+		// Store the provided value
+		combineMesh = optionalVals.additionalBools[addBoolIndex++];
+	}
+	else
+	{
+		// Default to not flipping
+		combineMesh = false;
+	}
+	// Check if there is a value for the swapChirality flag provided
+	if (optionalVals.additionalBools.size() > addBoolIndex)
+	{
+		// Store the provided value
+		swapChiral = optionalVals.additionalBools[addBoolIndex++];
+	}
+	else
+	{
+		// Default to not flipping
+		swapChiral = false;
 	}
 	// Check the input format
 	if (inputFormat == ".dae")
@@ -137,10 +173,28 @@ string convertMesh(string raw, string inputFormat, string outputFormat, AddInfo 
 	}
 	else if(inputFormat == ".mdls")
 	{
+		// Check if there is a value for the shadow flag provided
+		if (optionalVals.additionalBools.size() > addBoolIndex)
+		{
+			// Store the provided value
+			shadow = optionalVals.additionalBools[addBoolIndex++];
+		}
+		else
+		{
+			// Default to not flipping
+			shadow = false;
+		}
 		// Get the joint positions
 		joints = getMdlsJoints(raw);
-		// Get the vertex positions and face configuration
-		valid = getMdlsVerticesAndFaces(raw, joints, vertsR, faces);
+		if (shadow)
+		{
+			valid = getMdlsShadowVerticesAndFaces(raw, joints, vertsR, faces);
+		}
+		else
+		{
+			// Get the vertex positions and face configuration
+			valid = getMdlsVerticesAndFaces(raw, joints, vertsR, faces);
+		}
 		if (valid)
 		{
 			// Get the global vertices
@@ -154,40 +208,8 @@ string convertMesh(string raw, string inputFormat, string outputFormat, AddInfo 
 	}
 	else if (inputFormat == ".wpn")
 	{
-		// Get the joint positions
-		//joints = getMdlsJoints(raw);
-		// Construct joints
-		joints.reserve(3);
-		for (unsigned int i = 0; i < 3; i++)
-		{
-			JointRelative ji;
-			ji.ind = i;
-			ji.name = "";
-			ji.jointInfo.unknownFlag = 1;
-			if (i > 0)
-			{
-				ji.jointInfo.parentIndex = i - 1;
-				if (joints[i - 1].childrenIndices.size() == 0)
-				{
-					joints[i - 1].jointInfo.childIndex = i;
-				}
-				joints[i - 1].childrenIndices.push_back(i);
-			}
-			else
-			{
-				ji.jointInfo.parentIndex = absoluteMaxJoints;
-			}
-			ji.jointInfo.unknownIndex = absoluteMaxJoints;
-			ji.jointInfo.childIndex = absoluteMaxJoints;
-			for (unsigned int j = 0; j < numDims; j++)
-			{
-				ji.scaleFactors[j] = 1;
-				ji.rotations[j] = 0;
-				ji.coordinates[j] = 0;
-			}
-			ji.special = 0;
-			joints.push_back(ji);
-		}
+		// Get the joints
+		joints = getWpnJoints(raw, absoluteMaxJoints);
 		// Get the vertex positions and face configuration
 		valid = getWpnVerticesAndFaces(raw, vertsR, faces);
 		if (valid)
@@ -210,24 +232,81 @@ string convertMesh(string raw, string inputFormat, string outputFormat, AddInfo 
 	// Make sure the input is valid
 	if (valid)
 	{
+		unsigned int numTextures = getNumTextures(vertsG);
+		if (numTextures > 0)
+		{
+			vector<vector<VertexGlobal>> vgs;
+			vector<vector<VertexRelative>> vrs;
+			vector<vector<Face>> fs;
+			vgs.reserve(vertsG.size());
+			vrs.reserve(vertsR.size());
+			fs.reserve(faces.size());
+			for (unsigned int i = 0; i < numTextures; i++)
+			{
+				for (unsigned int j = 0; j < vertsG.size(); j++)
+				{
+					if (vertsG[j][0].textureIndex == i)
+					{
+						vgs.push_back(vertsG[j]);
+						vrs.push_back(vertsR[j]);
+						fs.push_back(faces[j]);
+					}
+				}
+			}
+			vertsG = vgs;
+			vertsR = vrs;
+			faces = fs;
+		}
+
 		// Check if wee need to normalize the model
 		if (normalize)
 		{
 			// Limit the coordinates to the range [-1, 1]
-			valid = normalizePosition(vertsG, adjusts, max);
+			valid = normalizePosition(vertsG, vertsG, joints, &joints);
+			if (valid)
+			{
+				valid = getVerticesRelative(joints, vertsG, vertsR);
+			}
 			if (!valid)
 			{
 				cout << "Error: Failed to normalize model" << endl;
 			}
 		}
-		else
+		// Check if we need to flip the UV coordinates
+		if (flipUVs)
 		{
-			// Set the adjust and max values to identity
-			for (unsigned int i = 0; i < numDims; i++)
+			// Flip the vertices' UV Coordinates
+			vector<vector<VertexGlobal>> flippedVerts;
+			vector<vector<VertexRelative>> flippedVerts2;
+			valid = flipUVCoordinates(vertsG, flippedVerts);
+			// Save the result as vertsG
+			vertsG = flippedVerts;
+			valid = valid && flipUVCoordinates(vertsR, flippedVerts2);
+			vertsR = flippedVerts2;
+		}
+		// Check if we need to combine the meshes
+		if (combineMesh)
+		{
+			if (combineMeshes(vertsG, faces))
 			{
-				adjusts[i] = 0;
+				getVerticesRelative(joints, vertsG, vertsR);
 			}
-			max = 1;
+			else
+			{
+				cout << "Error: Failed to combine meshes" << endl;
+			}
+		}
+		// Check if we need to swap chirality
+		if (swapChiral)
+		{
+			if (swapChirality(joints, vertsG))
+			{
+				getVerticesRelative(joints, vertsG, vertsR);
+			}
+			else
+			{
+				cout << "Error: Failed to swap the mesh's chirality" << endl;
+			}
 		}
 		// Check which outputFormat we are outputing
 		if (outputFormat == ".obj")
@@ -238,7 +317,7 @@ string convertMesh(string raw, string inputFormat, string outputFormat, AddInfo 
 				mtlFilename = optionalVals.additionalStrs[addStrIndex++];
 			}
 			// Convert to obj format
-			converted = convertMeshToObj(vertsG, faces, adjusts, max, mtlFilename);
+			converted = convertMeshToObj(vertsG, faces, mtlFilename);
 		}
 		else if (outputFormat == ".dae")
 		{
@@ -257,11 +336,11 @@ string convertMesh(string raw, string inputFormat, string outputFormat, AddInfo 
 			// Convert to dae (Collada) format
 			if (texturePrefix != "")
 			{
-				converted = convertMeshToDae(joints, vertsG, faces, anims, adjusts, max, texturePrefix);
+				converted = convertMeshToDae(joints, vertsG, faces, anims, texturePrefix);
 			}
 			else
 			{
-				converted = convertMeshToDae(joints, vertsG, faces, anims, adjusts, max);
+				converted = convertMeshToDae(joints, vertsG, faces, anims);
 			}
 		}
 		else if (outputFormat == ".mdls")
@@ -277,11 +356,11 @@ string convertMesh(string raw, string inputFormat, string outputFormat, AddInfo 
 			}
 			if (exampleRig != "")
 			{
-				converted = convertMeshToMdls(joints, vertsR, faces, exampleRig, exampleVertices, adjusts, max);
+				converted = convertMeshToMdls(joints, vertsR, faces, exampleRig, exampleVertices);
 			}
 			else
 			{
-				converted = convertMeshToMdls(joints, vertsR, faces, adjusts, max);
+				converted = convertMeshToMdls(joints, vertsR, faces);
 			}
 		}
 		else if (outputFormat == ".wpn")
@@ -293,11 +372,11 @@ string convertMesh(string raw, string inputFormat, string outputFormat, AddInfo 
 			}
 			if (exampleVertices != "")
 			{
-				converted = convertMeshToWpn(vertsR, faces, exampleVertices, adjusts, max);
+				converted = convertMeshToWpn(vertsR, faces, exampleVertices);
 			}
 			else
 			{
-				converted = convertMeshToWpn(vertsR, faces, adjusts, max);
+				converted = convertMeshToWpn(vertsR, faces);
 			}
 		}
 		// To-Do: Support more formats
@@ -310,96 +389,7 @@ string convertMesh(string raw, string inputFormat, string outputFormat, AddInfo 
 	return converted;
 }
 
-/* Converts the skeleton from the mdls outputFormat to a display file for my viewer */
-string convertSkeleton(string raw, string format, unsigned int maxJoints)
-{
-	// Declare variables
-	string converted = "", val;
-	vector<JointRelative> joints;
-	vector<VertexRelative> vertsR;
-	vector<VertexGlobal> vertsG;
-	unsigned int parentInd;
-	float adjusts[numDims], max;
-	stringstream ss;
-	// Get the joints from the file
-	joints = getMdlsJoints(raw, maxJoints);
-	// Create vertices at each joint to create a model of the skeleton
-	vertsR = convertJointsToVerts(joints);
-	// Convert the relative vertices to global vertices
-	if (getVerticesGlobal(joints, vertsR, vertsG))
-	{
-		// Normalize the vertex positions
-		if (normalizePosition(vertsG, adjusts, max))
-		{
-			// Check which outputFormat we are converting to
-			if (format == ".obj" || format == ".OBJ") // Convert to .obj (assumes positive X is the direction the model faces and positive Z is up)
-			{
-				// Add each a vertex
-				for (unsigned int i = 0; i < vertsG.size(); i++)
-				{
-					// VertexRelative Element symbol
-					converted += "v";
-					// For each dimension
-					for (unsigned int j = 0; j < numDims; j++)
-					{
-						// Convert the coordinate to a string
-						ss.clear();
-						ss.str("");
-						ss << (vertsG[i].coordinates[j] - adjusts[j]) / max;
-						ss >> val;
-						// Add the coordinate to the numAsStr
-						converted += " " + val;
-					}
-					// Go to the next numAsStr
-					converted += "\n";
-				}
-				// Add a point at each joint
-				converted += "\n";
-				// Form each numAsStr from the vertices
-				for (unsigned int i = 0; i < joints.size(); i++)
-				{
-					// Get the parent joint
-					parentInd = joints[i].jointInfo.parentIndex;
-					// Check if we need to add the numAsStr segment
-					if (parentInd != absoluteMaxJoints)
-					{
-						// Convert the vertex index of the numAsStr to a string
-						ss.clear();
-						ss.str("");
-						ss << (i + 1); // obj outputFormat indices start at 1
-						ss >> val;
-						// Add the Line element symbol and the first vertex index
-						converted += "l " + val + " ";
-						// Convert the parent vertex index of the numAsStr to a string
-						ss.clear();
-						ss.str("");
-						ss << (parentInd + 1); // obj outputFormat indices start at 1
-						ss >> val;
-						// Add the second vertex index and then go to the next numAsStr
-						converted += val + "\n";
-					}
-				}
-			}
-			// To-Do: Support more formats
-			else
-			{
-				cout << "Error: Failed to convert to unsupported format" << endl;
-			}
-		}
-		else
-		{
-			cout << "Error: Failed to normalize the skeleton" << endl;
-		}
-	}
-	else
-	{
-		cout << "Error: Failed to get the global vertex positions" << endl;
-	}
-	// Return the converted file
-	return converted;
-}
-
-string convertMeshToObj(vector<VertexGlobal> verts, vector<Face> faces, float adjustments[], float max, string mtlName)
+string convertMeshToObj(vector<vector<VertexGlobal>> verts, vector<vector<Face>> faces, string mtlName)
 {
 	string converted = "", numAsStr;
 	stringstream ss;
@@ -415,72 +405,78 @@ string convertMeshToObj(vector<VertexGlobal> verts, vector<Face> faces, float ad
 	// Copy each vertex into the file
 	for (unsigned int i = 0; i < verts.size(); i++)
 	{
-		// VertexRelative Identifier
-		converted += "v";
-		for (unsigned int j = 0; j < numDims; j++)
+		for (unsigned int j = 0; j < verts[i].size(); j++)
 		{
-			//  Convert each coordinate from float to string
-			ss.clear();
-			ss.str("");
-			// Use dim order to swap y and z since most obj imports use y as the vertical axis
-			ss << dimScalars[dimOrder[j]] * (verts[i].coordinates[dimOrder[j]] - adjustments[dimOrder[j]]) / max;
-			ss >> numAsStr;
-			// Append the coordinate to the numAsStr
-			converted += " " + numAsStr;
+			// VertexRelative Identifier
+			converted += "v";
+			for (unsigned int k = 0; k < numDims; k++)
+			{
+				//  Convert each coordinate from float to string
+				ss.clear();
+				ss.str("");
+				// Use dim order to swap y and z since most obj imports use y as the vertical axis
+				ss << dimScalars[dimOrder[k]] * verts[i][j].coordinates[dimOrder[k]];
+				ss >> numAsStr;
+				// Append the coordinate to the numAsStr
+				converted += " " + numAsStr;
+			}
+			// Go to the next numAsStr
+			converted += "\n";
+			// VertexRelative Texture Identifier
+			converted += "vt";
+			for (unsigned int k = 0; k < 2; k++)
+			{
+				// Convert the U and V values from float to string
+				ss.clear();
+				ss.str("");
+				ss << verts[i][j].textureMap[k];
+				ss >> numAsStr;
+				// Append the texture map to the numAsStr
+				converted += " " + numAsStr;
+			}
+			// Go to the next numAsStr
+			converted += "\n";
 		}
-		// Go to the next numAsStr
-		converted += "\n";
-		// VertexRelative Texture Identifier
-		converted += "vt";
-		for (unsigned int j = 0; j < 2; j++)
-		{
-			// Convert the U and V values from float to string
-			ss.clear();
-			ss.str("");
-			ss << verts[i].textureMap[j];
-			ss >> numAsStr;
-			// Append the texture map to the numAsStr
-			converted += " " + numAsStr;
-		}
-		// Go to the next numAsStr
-		converted += "\n";
 	}
 	// Add another blank line to separate the vertices and faces for read-ability
 	converted += "\n";
 	// Add each face into the file
 	for (unsigned int i = 0; i < faces.size(); i++)
 	{
-		// Check if the texture index changed
-		if (textureInd != verts[faces[i].vertexIndices[0]].textureIndex)
+		for (unsigned int j = 0; j < faces[i].size(); j++)
 		{
-			// Update the texture index
-			textureInd = verts[faces[i].vertexIndices[0]].textureIndex;
-			// Change the material being used
-			ss.clear();
-			ss.str("");
-			ss << textureInd;
-			ss >> numAsStr;
-			converted += "usemtl mat" + numAsStr + "\n";
+			// Check if the texture index changed
+			if (textureInd != verts[i][faces[i][j].vertexIndices[0]].textureIndex)
+			{
+				// Update the texture index
+				textureInd = verts[i][faces[i][j].vertexIndices[0]].textureIndex;
+				// Change the material being used
+				ss.clear();
+				ss.str("");
+				ss << textureInd;
+				ss >> numAsStr;
+				converted += "usemtl mat" + numAsStr + "\n";
+			}
+			// Face Identifier
+			converted += "f";
+			for (unsigned int k = 0; k < numVertsPerFace; k++)
+			{
+				// Convert each index from unsigned int to string
+				ss.clear();
+				ss.str("");
+				ss << (faces[i][j].vertexIndices[k] + 1); // .obj indices begin at 1, not 0
+				ss >> numAsStr;
+				// Append the index to the numAsStr
+				converted += " " + numAsStr + "/" + numAsStr;
+			}
+			// Go to the next line
+			converted += "\n";
 		}
-		// Face Identifier
-		converted += "f";
-		for (unsigned int j = 0; j < numVertsPerFace; j++)
-		{
-			// Convert each index from unsigned int to string
-			ss.clear();
-			ss.str("");
-			ss << (faces[i].vertexIndices[j] + 1); // .obj indices begin at 1, not 0
-			ss >> numAsStr;
-			// Append the index to the numAsStr
-			converted += " " + numAsStr + "/" + numAsStr;
-		}
-		// Go to the next line
-		converted += "\n";
 	}
 	return converted;
 }
 
-string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> verts, vector<Face> faces, float adjustments[], float max) 
+string convertMeshToMdls(vector<JointRelative> joints, vector<vector<VertexRelative>> verts, vector<vector<Face>> faces) 
 {
 	// Initialize mdls data to empty string
 	string converted = "";
@@ -510,15 +506,18 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 	return converted;
 }
 
-string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> verts, vector<Face> faces, string templateRigData, string templateVertexData, float adjustments[], float max)
+string convertMeshToMdls(vector<JointRelative> joints, vector<vector<VertexRelative>> verts, vector<vector<Face>> faces, string templateRigData, string templateVertexData)
 {
-	vector<vector<vector<vector<unsigned int>>>> polygonCollections;
+	// Declare constants
+	const unsigned int numOrigins = 3;
+	// Flags for excluding and/or swapping sections of the mobj and mdls (0 = copy from joint template, 1 = exclude section/copy from vertex template, swapping only occurs if updateRig is true)
+	const unsigned char excludeMdls = 0x00, excludeMobj = 0x02, swapMdls = 0x01, swapMobj = 0x1F;
+	// Declare and initialize variables
+	vector<PolygonCollection> polygonCollections;
 	// The copy variables determine if we copy their sections from the templates (true), or if the tool generates those sections (false)
 	bool updateRig, copyVertexData = false, copyJointData = false;
 	string converted = "", mobj, mobjV, newMobj;
 	unsigned int templateRigLen = templateRigData.size(), templateVertexLen = templateVertexData.size(), numSections, mobjOff, mobjVOff, mobjEnd, mobjVEnd, mobjLen, mobjVLen, subsectionOff, subsectionLen, numJoints, numTemplateJoints, numPolygonCollections, numVerts, textureInd, dimOff, jointInfo, origins[numOrigins], reset[numOrigins], remainder;
-	// Flags for excluding and/or swapping sections of the mobj and mdls (0 = copy from joint template, 1 = exclude section/copy from vertex template, swapping only occurs if updateRig is true)
-	const unsigned char excludeMdls = 0x00, excludeMobj = 0x02, swapMdls = 0x01, swapMobj = 0x1F;
 	// Determine if we are updating the rigging
 	updateRig = templateVertexLen > 0;
 	// Make sure the template is long enough to have the MDLS header
@@ -571,8 +570,7 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 			// Make sure the mobj has a header
 			if ((mobjLen >= mobjHeaderLen) && (!updateRig || (mobjVLen >= mobjHeaderLen)))
 			{
-				// Copy the mobj header to the new mobj
-				//newMobj = mobj.substr(0, mobjHeaderLen);
+				// Create MOBJ Header
 				newMobj = "MOBJ";
 				newMobj.append(mobjHeaderLen - 4, 0); // Fill in the lengths and offsets later
 				// Fill in the subsection 0 offset
@@ -581,12 +579,16 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 				if (!copyVertexData)
 				{
 					// Sort the faces to optimize polygon collections
-					faces = sortFaces(faces, verts);
+					//faces = sortFaces(faces, verts);
 					// Convert the faces into polygon collections
 					if (getPolygonCollections(verts, faces, polygonCollections))
 					{
 						// Save the number of polygon collections
 						numPolygonCollections = polygonCollections.size();
+						if(!compareFacesToPolygonCollections(faces, polygonCollections))
+						{
+							cout << "Error: PolygonCollections doesn't match faces" << endl;
+						}
 					}
 					else
 					{
@@ -637,7 +639,6 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 					}
 				}
 
-
 				// Create model data section header
 				newMobj.append((char *)&numJoints, sizeof(unsigned int));
 				newMobj.append(8, 0); // Need to fill in these offset values later
@@ -648,18 +649,30 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 					// Create the polygon collection table
 					for (unsigned int i = 0; i < numPolygonCollections; i++)
 					{
-						if (polygonCollections[i].size() > 0 && polygonCollections[i][0].size() > 0 && polygonCollections[i][0][0].size() > 0)
+						if (i < verts.size())
 						{
-							textureInd = verts[polygonCollections[i][0][0][0]].textureIndex;
+							if (polygonCollections[i].subcollections.size() > 0
+								&& polygonCollections[i].subcollections[0].triangleLists.size() > 0
+								&& polygonCollections[i].subcollections[0].triangleLists[0].vertexIndices.size() > 0)
+							{
+								unsigned int vertexIndex = polygonCollections[i].subcollections[0].triangleLists[0].vertexIndices[0];
+								textureInd = verts[i][vertexIndex].textureIndex;
+							}
+							else
+							{
+								textureInd = 0;
+							}
+							newMobj.append(4, 0);
+							newMobj.append((char *)&textureInd, sizeof(unsigned int));
+							newMobj.append((char *)&textureInd, sizeof(unsigned int));
+							newMobj.append(4, 0); // Need to fill in this offset later
 						}
 						else
 						{
-							textureInd = 0;
+							// Invalid vertex vector or polygon collection vector
+							numPolygonCollections = 0;
+							cout << "Error: The vertices vector does not correspond with the polygon collection vector" << endl;
 						}
-						newMobj.append(4, 0);
-						newMobj.append((char *)&textureInd, sizeof(unsigned int));
-						newMobj.append((char *)&textureInd, sizeof(unsigned int));
-						newMobj.append(4, 0); // Need to fill in this offset later
 					}
 					// Append 32 bytes padding
 					newMobj.append(32, 0);
@@ -713,6 +726,8 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 				// Create the joint data section from joints vector
 				if (!copyJointData)
 				{
+					vector<JointRelative> templateJoints = getMdlsJoints(templateRigData);
+
 					if (updateRig && copyVertexData)
 					{
 						// Get the number of joints in the template file
@@ -728,7 +743,7 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 					}
 
 					// For each joint...
-					for (unsigned int i = 0; i < numJoints; i++)
+					for (unsigned int i = 0; i < numJoints && i < templateJoints.size(); i++)
 					{
 						// Add joint i's scale factors
 						for (unsigned int j = 0; j < numDims; j++)
@@ -745,14 +760,16 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 							newMobj.append((char *)&(joints[i].rotations[dimOff]), 4);
 						}
 						// Add the special value
-						newMobj.append((char *)&(joints[i].special), 4);
+						//newMobj.append((char *)&(joints[i].special), 4);
+						newMobj.append((char *)&(templateJoints[i].special), 4);
 						// Add the joint position
 						for (unsigned int j = 0; j < numDims; j++)
 						{
 							dimOff = (j + 1) % numDims;
 							newMobj.append((char *)&(joints[i].coordinates[dimOff]), 4);
 						}
-						jointInfo = (joints[i].jointInfo.unknownFlag << 30) | (joints[i].jointInfo.childIndex << 20) | (joints[i].jointInfo.unknownIndex << 10) | joints[i].jointInfo.parentIndex;
+						//jointInfo = (joints[i].jointInfo.unknownFlag << 30) | (joints[i].jointInfo.childIndex << 20) | (joints[i].jointInfo.unknownIndex << 10) | joints[i].jointInfo.parentIndex;
+						jointInfo = (templateJoints[i].jointInfo.unknownFlag << 30) | (templateJoints[i].jointInfo.childIndex << 20) | (templateJoints[i].jointInfo.unknownIndex << 10) | templateJoints[i].jointInfo.parentIndex;
 						// Add the joint info
 						newMobj.append((char *)&(jointInfo), 4);
 					}
@@ -780,14 +797,17 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 				{
 					if (!copyVertexData)
 					{
+						unsigned int numFilledOrigins, numFilledPreviousOrigins;
 						// Handle Polygon Collections and Joint References
 						for (unsigned int i = 0; i < numPolygonCollections; i++)
 						{
-
+							PolygonCollection polygonCollection = polygonCollections[i];
 							// Update offset in the polygon collection table
 							subsectionOff = newMobj.size() - mobjHeaderLen;
 							*(unsigned int *)&(newMobj[mobjHeaderLen + i * 16 + 28]) = subsectionOff;
-
+							// Reset the origin counts
+							numFilledOrigins = 0;
+							numFilledPreviousOrigins = 0;
 							// Set origin joint indices to uninitialized and clear the reset
 							for (unsigned int j = 0; j < numOrigins; j++)
 							{
@@ -796,126 +816,147 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 							}
 							bool initialized = false, reinitialize = false;
 							// For each polygon sub-collection in the polygon collection
-							for (unsigned int j = 0; j < polygonCollections[i].size(); j++)
+							for (unsigned int j = 0; j < polygonCollection.subcollections.size(); j++)
 							{
-
+								PolygonSubCollection subcollection = polygonCollection.subcollections[j];
 								// Store the current size of the mobj for later so we can calculate the length of the polygon collection
 								subsectionOff = newMobj.size();
 								// Padding
 								newMobj.append(8, 0); // Fill in the length field later
 								// Unknown Stuff
-								newMobj.append("\x01\x01\x00\x01\x00\x80\x00\x6C", 8);	// Fill in ?2 field later (length - 1)
+								newMobj.append("\x01\x01\x00\x01\x00\x80\x00\x6C", 8);	// Fill in ?2 field later [(length - 16) / 16]
 
 								// For each triangle list in the polygon sub-collection
-								for (unsigned int k = 0; k < polygonCollections[i][j].size(); k++)
+								for (unsigned int k = 0; k < subcollection.triangleLists.size(); k++)
 								{
+									unsigned int vertexIndex;
+									TriangleList triangleList = subcollection.triangleLists[k];
 									// For each vertex in the triangle list
-									for (unsigned int l = 0; initialized && l < polygonCollections[i][j][k].size(); l++)
+									for (unsigned int l = 0; initialized && l < triangleList.vertexIndices.size(); l++)
 									{
+										vertexIndex = triangleList.vertexIndices[l];
 										// Check if we need to reinitialize the origins
-										for (unsigned int m = 0; initialized && m < numOrigins; m++)
+										if (numFilledOrigins > 0)
 										{
-											// Check if this vertex's origin joint matches any of the stored origin joints
-											if (verts[polygonCollections[i][j][k][l]].originJointIndex == origins[m])
+											for (unsigned int m = 0; initialized && m < numFilledOrigins; m++)
 											{
-												// The origin joint is valid, we can continue without reinitializing
-												break;
-											}
-											// If we didn't find it
-											else if (m == (numOrigins - 1))
-											{
-												// We need to reinitialize
-												initialized = false;
+												// Check if this vertex's origin joint matches any of the stored origin joints
+												if (verts[i][vertexIndex].originJointIndex == origins[m])
+												{
+													// The origin joint is valid, we can continue without reinitializing
+													break;
+												}
+												// If we didn't find it
+												else if (m == (numFilledOrigins - 1))
+												{
+													// We need to reinitialize
+													initialized = false;
+												}
 											}
 										}
+										else
+										{
+											// We need to initialize
+											initialized = false;
+										}
 									}
-									// Check if the origins have been initialized with real indices
+									// Check if the origins have been initialized
 									if (!initialized)
 									{
+										unsigned int numNewOrigins;
+										vector<unsigned int> newOrigins;
+										newOrigins.reserve(numOrigins);
 										// Store the previous values of the origins array in the reset array and clear the origins array
-										for (unsigned int l = 0; l < numOrigins; l++)
+										for (unsigned int l = 0; l < numFilledOrigins && l < numOrigins; l++)
 										{
 											reset[l] = origins[l];
 											origins[l] = absoluteMaxJoints;
 										}
-										// Start from the current triangle list
-										for (unsigned int k2 = k; !initialized && k2 < polygonCollections[i][j].size(); k2++)
+										// Update the number of previously filled origins
+										numFilledPreviousOrigins = numFilledOrigins;
+										// Reset the number of filled origins
+										numFilledOrigins = 0;
+
+										// For each vertex in the triangle list
+										for (unsigned int l = 0; l < triangleList.vertexIndices.size(); l++)
+										{
+											bool isReset = false;
+											vertexIndex = triangleList.vertexIndices[l];
+											for (unsigned int m = 0; m < numFilledPreviousOrigins; m++)
+											{
+												if (reset[m] == verts[i][vertexIndex].originJointIndex)
+												{
+													isReset = true;
+													break;
+												}
+											}
+											if (!isReset && find(newOrigins.begin(), newOrigins.end(), verts[i][vertexIndex].originJointIndex) == newOrigins.end())
+											{
+												newOrigins.push_back(verts[i][vertexIndex].originJointIndex);
+											}
+										}
+										numNewOrigins = newOrigins.size();
+
+										for (unsigned int k2 = k; (numFilledOrigins + numNewOrigins) < numOrigins && k2 < subcollection.triangleLists.size(); k2++)
 										{
 											// For each vertex in the triangle list
-											for (unsigned int l = 0; !initialized && l < polygonCollections[i][j][k2].size(); l++)
+											for (unsigned int l = 0; (numFilledOrigins + numNewOrigins) < numOrigins && l < subcollection.triangleLists[k2].vertexIndices.size(); l++)
 											{
+												vertexIndex = subcollection.triangleLists[k2].vertexIndices[l];
 												// For each origin we can reference simultaneously
-												for (unsigned int m = 0; m < numOrigins; m++)
+												for (unsigned int m = 0; m < numFilledPreviousOrigins; m++)
 												{
 													// Check if this vertex has a new joint we need to reference
-													if (verts[polygonCollections[i][j][k2][l]].originJointIndex != origins[m] && origins[m] == absoluteMaxJoints)
+													if (verts[i][vertexIndex].originJointIndex == reset[m] && origins[m] == absoluteMaxJoints)
 													{
 														// Store the new index
-														origins[m] = verts[polygonCollections[i][j][k2][l]].originJointIndex;
-														// Check if we just filled the origins array
-														if (m == (numOrigins - 1))
-														{
-															// We are done initializing
-															initialized = true;
-														}
-														// Break from the loop so we don't duplicate the entry
+														origins[m] = reset[m];
+														numFilledOrigins++;
 														break;
-													}
-													else if (verts[polygonCollections[i][j][k2][l]].originJointIndex == origins[m])
-													{
-														// This is a repeat, just break from the loop to try the next vertex
-														break;
-													}
-													// Check if this vertex matches the joint from the previous initialization
-													else //if (verts[polygonCollections[i][j][k2][l]].originJointIndex == reset[m] && origins[m] == absoluteMaxJoints)
-													{
-														// Check if this vertex matches the joint from a previous initialization
-														bool repeat = false;
-														if (origins[m] == absoluteMaxJoints)
-														{
-															for (unsigned int n = 0; !repeat && (n < numOrigins); n++)
-															{
-																if (verts[polygonCollections[i][j][k2][l]].originJointIndex == reset[n])
-																{
-																	// Store the previous index
-																	origins[m] = reset[n];
-																	repeat = true;
-																}
-															}
-														}
-														// Store the previous index
-														//origins[m] = reset[m];
-														if (repeat)
-														{
-															// Check if we just filled the origins array
-															if (m == (numOrigins - 1))
-															{
-																// We are done initializing
-																initialized = true;
-															}
-															// Break from the loop so we don't duplicate the entry
-															break;
-														}
 													}
 												}
 											}
 										}
+										for(unsigned int l = 0; l < numNewOrigins; l++)
+										{
+											// For each origin we can reference simultaneously
+											for (unsigned int m = 0; m < numOrigins; m++)
+											{
+												// Check if this vertex has a new joint we need to reference
+												if (origins[m] == absoluteMaxJoints)
+												{
+													// Store the new index
+													origins[m] = newOrigins[l];
+													numFilledOrigins++;
+													// Break from the loop so we don't duplicate the entry
+													break;
+												}
+												else if (m == (numOrigins - 1))
+												{
+													cout << "Warning: Failed to store new origin i: " << i << " j: " << j << " k: " << k << endl;
+												}
+											}
+										}
+										// Copy over the reset origins into any unused slots
+										for (unsigned int l = 0; l < numFilledPreviousOrigins; l++)
+										{
+											if (origins[l] == absoluteMaxJoints)
+											{
+												origins[l] = reset[l];
+												numFilledOrigins++;
+											}
+										}
+										// Set the initialized flag and the reinitialize flag
 										initialized = true;
 										reinitialize = true;
 									}
-									// At this point we should have the correct origins
+									// Check if we need to reinitialize
 									if (reinitialize)
 									{
 										// For each origin
 										for (unsigned int l = 0; l < numOrigins; l++)
 										{
-											bool writeOrigin = origins[l] != absoluteMaxJoints;
-											for (unsigned int m = 0; writeOrigin && (m < numOrigins); m++)
-											{
-												writeOrigin = writeOrigin && (origins[l] != reset[m]);
-											}
 											// Check if we need to update the origin by comparing with reset
-											//if (writeOrigin)
 											if (origins[l] != absoluteMaxJoints && origins[l] != reset[l])
 											{
 												// Write the origin update subsection
@@ -925,13 +966,12 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 												newMobj.append(116, 0);						// Padding (used for computation)
 											}
 										}
-
 										// Clear the reinitialize flag
 										reinitialize = false;
 									}
 
 									// Write triangle list header
-									numVerts = polygonCollections[i][j][k].size();
+									numVerts = triangleList.vertexIndices.size();
 									// Calculate the length of the triangle list section
 									subsectionLen = numVerts * 48 + 32;
 									// Triangle list identifier
@@ -940,8 +980,9 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 									newMobj.append((char *)&(subsectionLen), sizeof(unsigned int));
 									// Number of vertices in the triangle list
 									newMobj.append((char *)&(numVerts), sizeof(unsigned int));
-									// Initial culling direction flag (0 - Anticlockwise, 1 - Clockwise), We assume Anticlockwise 
-									newMobj.append(4, 0);
+									// Initial culling direction flag (0 - Anticlockwise, 1 - Clockwise)
+									newMobj.append(1, triangleList.orientation);
+									newMobj.append(3, 0);
 									// Copy of the number of vertices
 									newMobj.append((char *)&(numVerts), sizeof(unsigned int));
 									// Unknown stuff
@@ -950,9 +991,10 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 									newMobj.append(4, 0);
 
 									// For each vertex in the triangle list
-									for (unsigned int l = 0; l < polygonCollections[i][j][k].size(); l++)
+									for (unsigned int l = 0; l < triangleList.vertexIndices.size(); l++)
 									{
-										VertexRelative v = verts[polygonCollections[i][j][k][l]];
+										unsigned int vertexIndex = triangleList.vertexIndices[l];
+										VertexRelative v = verts[i][vertexIndex];
 										// Write the normals
 										for (unsigned int m = 0; m < numDims; m++)
 										{
@@ -972,6 +1014,7 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 											else if (m == (numOrigins - 1))
 											{
 												// Fail safe
+												cout << "Warning: Unable to find origin joint for i: " << i << " j: " << j << " k: " << k << " l: " << l << endl;
 												newMobj.append(4, 0);
 											}
 										}
@@ -989,10 +1032,16 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 										{
 											// Get the UV coordinate
 											float texVal = v.textureMap[m];
-											// Invert the V coordinate, because mdls format is special
-											if (m == 1)
+											while (texVal < 0 || texVal > 1)
 											{
-												texVal = 1 - texVal;
+												if (texVal > 1)
+												{
+													texVal -= 1;
+												}
+												else
+												{
+													texVal += 1;
+												}
 											}
 											// Write the vertex's UV coordinates
 											newMobj.append((char *)&(texVal), sizeof(float));
@@ -1006,7 +1055,7 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 
 								// Write the polygon (sub) collection footer
 								newMobj.append("\x00\x80\x00\x00", 4);
-								if (j == (polygonCollections[i].size() - 1))
+								if (j == (polygonCollection.subcollections.size() - 1))
 								{
 									// This is the end of the polygon collection
 									newMobj.append(1, 0);
@@ -1023,12 +1072,16 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 								*(unsigned int *)&(newMobj[subsectionOff]) = ((newMobj.size() - subsectionOff) / 16) - 1;
 								newMobj[subsectionOff + 3] = 16;
 								// Update ?2 field
-								newMobj[subsectionOff + 14] = newMobj[subsectionOff] - 1;
-
+								if ((*(unsigned int *)&(newMobj[subsectionOff]) & 0x00FFFFFF) < 256)
+								{
+									newMobj[subsectionOff + 14] = newMobj[subsectionOff] - 1;
+								}
+								else
+								{
+									cout << "Warning: Invalid polygon subcollection length i: " << i << " j: " << j << endl;
+									newMobj[subsectionOff + 14] = (char)255;
+								}
 							}
-
-							// To-Do: End of Polygon Collection?
-
 						}
 					}
 					else
@@ -1099,7 +1152,7 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 
 				// Update the model data section length
 				*(unsigned int *)&(newMobj[36]) = subsectionLen;
-				// To-Do: Subsection 1
+				// Subsection 1
 				subsectionOff = newMobj.size();
 				// Update the Subsection 1 offset
 				*(unsigned int *)&(newMobj[40]) = subsectionOff;
@@ -1108,7 +1161,7 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 				{
 					// For now just copy Subsection 1 from the template
 					// Check which template to copy from
-					if ((swapMobj & 0x02) != 0)
+					if (updateRig && (swapMobj & 0x02) != 0)
 					{
 						// Get the offset and length of the subsection
 						subsectionOff = *(unsigned int *)&(mobjV[40]);
@@ -1369,26 +1422,22 @@ string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> ve
 	return converted;
 }
 
-string convertMeshToWpn(vector<VertexRelative> verts, vector<Face> faces, float adjustments[], float max)
+string convertMeshToWpn(vector<vector<VertexRelative>> verts, vector<vector<Face>> faces)
 {
 	string converted = "";
 	cout << "Warning: Converting to WPN without a template is currently not supported" << endl;
 	return converted;
 }
 
-string convertMeshToWpn(vector<VertexRelative> verts, vector<Face> faces, string templateData, float adjustments[], float max)
+string convertMeshToWpn(vector<vector<VertexRelative>> verts, vector<vector<Face>> faces, string templateData)
 {
-	vector<vector<vector<vector<unsigned int>>>> polygonCollections;
+	vector<PolygonCollection> polygonCollections;
 	// The copy variables determine if we copy their sections from the templates (true), or if the tool generates those sections (false)
 	string converted = "", menv, newMenv;
-	unsigned int templateLen = templateData.size(), numSections, menvOff, menvLen, sectionOff, nextSectionOff, sectionLen, subsectionOff, subsectionLen, numPolygonCollections, numJoints, numVerts = verts.size(), textureInd, dimOff, origins[numOrigins], reset[numOrigins], remainder;
+	const unsigned int numOrigins = 3;
 	// Flags for excluding and/or swapping sections of the mobj and mdls (0 = include section, 1 = exclude section)
 	const unsigned char excludeWpn = 0x00, excludeMenv = 0x02;
-	// Set all of the vertices to use joint 2
-	for (unsigned int i = 0; i < numVerts; i++)
-	{
-		verts[i].originJointIndex = 2;
-	}
+	unsigned int templateLen = templateData.size(), numSections, menvOff, menvLen, sectionOff, nextSectionOff, sectionLen, subsectionOff, subsectionLen, numPolygonCollections, numJoints, numVerts, textureInd, dimOff, origins[numOrigins], reset[numOrigins], remainder;
 	// Make sure the template is long enough to have the MDLS header
 	if (templateLen > 16)
 	{
@@ -1456,7 +1505,7 @@ string convertMeshToWpn(vector<VertexRelative> verts, vector<Face> faces, string
 					// Fill in the subsection 0 offset
 					*(unsigned int *)&(newMenv[32]) = menvHeaderLen;
 					// Sort the faces to optimize polygon collections
-					faces = sortFaces(faces, verts);
+					//faces = sortFaces(faces, verts);
 					// Convert the faces into polygon collections
 					if (getPolygonCollections(verts, faces, polygonCollections))
 					{
@@ -1486,9 +1535,12 @@ string convertMeshToWpn(vector<VertexRelative> verts, vector<Face> faces, string
 					// Create the polygon collection table
 					for (unsigned int i = 0; i < numPolygonCollections; i++)
 					{
-						if (polygonCollections[i].size() > 0 && polygonCollections[i][0].size() > 0 && polygonCollections[i][0][0].size() > 0)
+						if (polygonCollections[i].subcollections.size() > 0 
+							&& polygonCollections[i].subcollections[0].triangleLists.size() > 0 
+							&& polygonCollections[i].subcollections[0].triangleLists[0].vertexIndices.size() > 0)
 						{
-							textureInd = verts[polygonCollections[i][0][0][0]].textureIndex;
+							unsigned int vertexIndex = polygonCollections[i].subcollections[0].triangleLists[0].vertexIndices[0];
+							textureInd = verts[i][vertexIndex].textureIndex;
 						}
 						else
 						{
@@ -1507,13 +1559,17 @@ string convertMeshToWpn(vector<VertexRelative> verts, vector<Face> faces, string
 					// Check if we are excluding the model data from the mobj
 					if ((excludeMenv & 0x01) == 0)
 					{
+						unsigned int numFilledOrigins, numFilledPreviousOrigins;
 						// Handle Polygon Collections and Joint References
 						for (unsigned int i = 0; i < numPolygonCollections; i++)
 						{
+							PolygonCollection polygonCollection = polygonCollections[i];
 							// Update offset in the polygon collection table
 							subsectionOff = newMenv.size() - menvHeaderLen;
 							*(unsigned int *)&(newMenv[menvHeaderLen + i * 16 + 28]) = subsectionOff;
-
+							// Reset the origin counts
+							numFilledOrigins = 0;
+							numFilledPreviousOrigins = 0;
 							// Set origin joint indices to uninitialized and clear the reset
 							for (unsigned int j = 0; j < numOrigins; j++)
 							{
@@ -1522,126 +1578,147 @@ string convertMeshToWpn(vector<VertexRelative> verts, vector<Face> faces, string
 							}
 							bool initialized = false, reinitialize = false;
 							// For each polygon sub-collection in the polygon collection
-							for (unsigned int j = 0; j < polygonCollections[i].size(); j++)
+							for (unsigned int j = 0; j < polygonCollection.subcollections.size(); j++)
 							{
-
+								PolygonSubCollection subcollection = polygonCollection.subcollections[j];
 								// Store the current size of the mobj for later so we can calculate the length of the polygon collection
 								subsectionOff = newMenv.size();
 								// Padding
 								newMenv.append(8, 0); // Fill in the length field later
 								// Unknown Stuff
-								newMenv.append("\x01\x01\x00\x01\x00\x80\x00\x6C", 8);	// Fill in ?2 field later (length - 1)
+								newMenv.append("\x01\x01\x00\x01\x00\x80\x00\x6C", 8);	// Fill in ?2 field later [(length - 16) / 16]
 
 								// For each triangle list in the polygon sub-collection
-								for (unsigned int k = 0; k < polygonCollections[i][j].size(); k++)
+								for (unsigned int k = 0; k < subcollection.triangleLists.size(); k++)
 								{
+									unsigned int vertexIndex;
+									TriangleList triangleList = subcollection.triangleLists[k];
 									// For each vertex in the triangle list
-									for (unsigned int l = 0; initialized && l < polygonCollections[i][j][k].size(); l++)
+									for (unsigned int l = 0; initialized && l < triangleList.vertexIndices.size(); l++)
 									{
+										vertexIndex = triangleList.vertexIndices[l];
 										// Check if we need to reinitialize the origins
-										for (unsigned int m = 0; initialized && m < numOrigins; m++)
+										if (numFilledOrigins > 0)
 										{
-											// Check if this vertex's origin joint matches any of the stored origin joints
-											if (verts[polygonCollections[i][j][k][l]].originJointIndex == origins[m])
+											for (unsigned int m = 0; initialized && m < numFilledOrigins; m++)
 											{
-												// The origin joint is valid, we can continue without reinitializing
-												break;
-											}
-											// If we didn't find it
-											else if (m == (numOrigins - 1))
-											{
-												// We need to reinitialize
-												initialized = false;
+												// Check if this vertex's origin joint matches any of the stored origin joints
+												if (verts[i][vertexIndex].originJointIndex == origins[m])
+												{
+													// The origin joint is valid, we can continue without reinitializing
+													break;
+												}
+												// If we didn't find it
+												else if (m == (numFilledOrigins - 1))
+												{
+													// We need to reinitialize
+													initialized = false;
+												}
 											}
 										}
+										else
+										{
+											// We need to initialize
+											initialized = false;
+										}
 									}
-									// Check if the origins have been initialized with real indices
+									// Check if the origins have been initialized
 									if (!initialized)
 									{
+										unsigned int numNewOrigins;
+										vector<unsigned int> newOrigins;
+										newOrigins.reserve(numOrigins);
 										// Store the previous values of the origins array in the reset array and clear the origins array
-										for (unsigned int l = 0; l < numOrigins; l++)
+										for (unsigned int l = 0; l < numFilledOrigins && l < numOrigins; l++)
 										{
 											reset[l] = origins[l];
 											origins[l] = absoluteMaxJoints;
 										}
-										// Start from the current triangle list
-										for (unsigned int k2 = k; !initialized && k2 < polygonCollections[i][j].size(); k2++)
+										// Update the number of previously filled origins
+										numFilledPreviousOrigins = numFilledOrigins;
+										// Reset the number of filled origins
+										numFilledOrigins = 0;
+
+										// For each vertex in the triangle list
+										for (unsigned int l = 0; l < triangleList.vertexIndices.size(); l++)
+										{
+											bool isReset = false;
+											vertexIndex = triangleList.vertexIndices[l];
+											for (unsigned int m = 0; m < numFilledPreviousOrigins; m++)
+											{
+												if (reset[m] == verts[i][vertexIndex].originJointIndex)
+												{
+													isReset = true;
+													break;
+												}
+											}
+											if (!isReset && find(newOrigins.begin(), newOrigins.end(), verts[i][vertexIndex].originJointIndex) == newOrigins.end())
+											{
+												newOrigins.push_back(verts[i][vertexIndex].originJointIndex);
+											}
+										}
+										numNewOrigins = newOrigins.size();
+
+										for (unsigned int k2 = k; (numFilledOrigins + numNewOrigins) < numOrigins && k2 < subcollection.triangleLists.size(); k2++)
 										{
 											// For each vertex in the triangle list
-											for (unsigned int l = 0; !initialized && l < polygonCollections[i][j][k2].size(); l++)
+											for (unsigned int l = 0; (numFilledOrigins + numNewOrigins) < numOrigins && l < subcollection.triangleLists[k2].vertexIndices.size(); l++)
 											{
+												vertexIndex = subcollection.triangleLists[k2].vertexIndices[l];
 												// For each origin we can reference simultaneously
-												for (unsigned int m = 0; m < numOrigins; m++)
+												for (unsigned int m = 0; m < numFilledPreviousOrigins; m++)
 												{
 													// Check if this vertex has a new joint we need to reference
-													if (verts[polygonCollections[i][j][k2][l]].originJointIndex != origins[m] && origins[m] == absoluteMaxJoints)
+													if (verts[i][vertexIndex].originJointIndex == reset[m] && origins[m] == absoluteMaxJoints)
 													{
 														// Store the new index
-														origins[m] = verts[polygonCollections[i][j][k2][l]].originJointIndex;
-														// Check if we just filled the origins array
-														if (m == (numOrigins - 1))
-														{
-															// We are done initializing
-															initialized = true;
-														}
-														// Break from the loop so we don't duplicate the entry
+														origins[m] = reset[m];
+														numFilledOrigins++;
 														break;
-													}
-													else if (verts[polygonCollections[i][j][k2][l]].originJointIndex == origins[m])
-													{
-														// This is a repeat, just break from the loop to try the next vertex
-														break;
-													}
-													// Check if this vertex matches the joint from the previous initialization
-													else //if (verts[polygonCollections[i][j][k2][l]].originJointIndex == reset[m] && origins[m] == absoluteMaxJoints)
-													{
-														// Check if this vertex matches the joint from a previous initialization
-														bool repeat = false;
-														if (origins[m] == absoluteMaxJoints)
-														{
-															for (unsigned int n = 0; !repeat && (n < numOrigins); n++)
-															{
-																if (verts[polygonCollections[i][j][k2][l]].originJointIndex == reset[n])
-																{
-																	// Store the previous index
-																	origins[m] = reset[n];
-																	repeat = true;
-																}
-															}
-														}
-														// Store the previous index
-														//origins[m] = reset[m];
-														if (repeat)
-														{
-															// Check if we just filled the origins array
-															if (m == (numOrigins - 1))
-															{
-																// We are done initializing
-																initialized = true;
-															}
-															// Break from the loop so we don't duplicate the entry
-															break;
-														}
 													}
 												}
 											}
 										}
+										for (unsigned int l = 0; l < numNewOrigins; l++)
+										{
+											// For each origin we can reference simultaneously
+											for (unsigned int m = 0; m < numOrigins; m++)
+											{
+												// Check if this vertex has a new joint we need to reference
+												if (origins[m] == absoluteMaxJoints)
+												{
+													// Store the new index
+													origins[m] = newOrigins[l];
+													numFilledOrigins++;
+													// Break from the loop so we don't duplicate the entry
+													break;
+												}
+												else if (m == (numOrigins - 1))
+												{
+													cout << "Warning: Failed to store new origin i: " << i << " j: " << j << " k: " << k << endl;
+												}
+											}
+										}
+										// Copy over the reset origins into any unused slots
+										for (unsigned int l = 0; l < numFilledPreviousOrigins; l++)
+										{
+											if (origins[l] == absoluteMaxJoints)
+											{
+												origins[l] = reset[l];
+												numFilledOrigins++;
+											}
+										}
+										// Set the initialized flag and the reinitialize flag
 										initialized = true;
 										reinitialize = true;
 									}
-									// At this point we should have the correct origins
+									// Check if we need to reinitialize
 									if (reinitialize)
 									{
 										// For each origin
 										for (unsigned int l = 0; l < numOrigins; l++)
 										{
-											bool writeOrigin = origins[l] != absoluteMaxJoints;
-											for (unsigned int m = 0; writeOrigin && (m < numOrigins); m++)
-											{
-												writeOrigin = writeOrigin && (origins[l] != reset[m]);
-											}
 											// Check if we need to update the origin by comparing with reset
-											//if (writeOrigin)
 											if (origins[l] != absoluteMaxJoints && origins[l] != reset[l])
 											{
 												// Write the origin update subsection
@@ -1651,13 +1728,12 @@ string convertMeshToWpn(vector<VertexRelative> verts, vector<Face> faces, string
 												newMenv.append(116, 0);						// Padding (used for computation)
 											}
 										}
-
 										// Clear the reinitialize flag
 										reinitialize = false;
 									}
 
 									// Write triangle list header
-									numVerts = polygonCollections[i][j][k].size();
+									numVerts = triangleList.vertexIndices.size();
 									// Calculate the length of the triangle list section
 									subsectionLen = numVerts * 48 + 32;
 									// Triangle list identifier
@@ -1666,8 +1742,9 @@ string convertMeshToWpn(vector<VertexRelative> verts, vector<Face> faces, string
 									newMenv.append((char *)&(subsectionLen), sizeof(unsigned int));
 									// Number of vertices in the triangle list
 									newMenv.append((char *)&(numVerts), sizeof(unsigned int));
-									// Initial culling direction flag (0 - Anticlockwise, 1 - Clockwise), We assume Anticlockwise 
-									newMenv.append(4, 0);
+									// Initial culling direction flag (0 - Anticlockwise, 1 - Clockwise)
+									newMenv.append(1, triangleList.orientation);
+									newMenv.append(3, 0);
 									// Copy of the number of vertices
 									newMenv.append((char *)&(numVerts), sizeof(unsigned int));
 									// Unknown stuff
@@ -1676,9 +1753,10 @@ string convertMeshToWpn(vector<VertexRelative> verts, vector<Face> faces, string
 									newMenv.append(4, 0);
 
 									// For each vertex in the triangle list
-									for (unsigned int l = 0; l < polygonCollections[i][j][k].size(); l++)
+									for (unsigned int l = 0; l < triangleList.vertexIndices.size(); l++)
 									{
-										VertexRelative v = verts[polygonCollections[i][j][k][l]];
+										unsigned int vertexIndex = triangleList.vertexIndices[l];
+										VertexRelative v = verts[i][vertexIndex];
 										// Write the normals
 										for (unsigned int m = 0; m < numDims; m++)
 										{
@@ -1698,6 +1776,7 @@ string convertMeshToWpn(vector<VertexRelative> verts, vector<Face> faces, string
 											else if (m == (numOrigins - 1))
 											{
 												// Fail safe
+												cout << "Warning: Unable to find origin joint for i: " << i << " j: " << j << " k: " << k << " l: " << l << endl;
 												newMenv.append(4, 0);
 											}
 										}
@@ -1715,10 +1794,16 @@ string convertMeshToWpn(vector<VertexRelative> verts, vector<Face> faces, string
 										{
 											// Get the UV coordinate
 											float texVal = v.textureMap[m];
-											// Invert the V coordinate, because mdls format is special
-											if (m == 1)
+											while (texVal > 1 || texVal < 0)
 											{
-												texVal = 1 - texVal;
+												if (texVal > 1)
+												{
+													texVal -= 1;
+												}
+												else
+												{
+													texVal += 1;
+												}
 											}
 											// Write the vertex's UV coordinates
 											newMenv.append((char *)&(texVal), sizeof(float));
@@ -1732,7 +1817,7 @@ string convertMeshToWpn(vector<VertexRelative> verts, vector<Face> faces, string
 
 								// Write the polygon (sub) collection footer
 								newMenv.append("\x00\x80\x00\x00", 4);
-								if (j == (polygonCollections[i].size() - 1))
+								if (j == (polygonCollection.subcollections.size() - 1))
 								{
 									// This is the end of the polygon collection
 									newMenv.append(1, 0);
@@ -1749,12 +1834,16 @@ string convertMeshToWpn(vector<VertexRelative> verts, vector<Face> faces, string
 								*(unsigned int *)&(newMenv[subsectionOff]) = ((newMenv.size() - subsectionOff) / 16) - 1;
 								newMenv[subsectionOff + 3] = 16;
 								// Update ?2 field
-								newMenv[subsectionOff + 14] = newMenv[subsectionOff] - 1;
-
+								if ((*(unsigned int *)&(newMenv[subsectionOff]) & 0x00FFFFFF) < 256)
+								{
+									newMenv[subsectionOff + 14] = newMenv[subsectionOff] - 1;
+								}
+								else
+								{
+									cout << "Warning: Invalid polygon subcollection length i: " << i << " j: " << j << endl;
+									newMenv[subsectionOff + 14] = (char)255;
+								}
 							}
-
-							// To-Do: End of Polygon Collection?
-
 						}
 						subsectionLen = newMenv.size() - menvHeaderLen;
 					}
@@ -1766,7 +1855,7 @@ string convertMeshToWpn(vector<VertexRelative> verts, vector<Face> faces, string
 
 					// Update the model data section length
 					*(unsigned int *)&(newMenv[36]) = subsectionLen;
-					// To-Do: Subsection 1
+					// Subsection 1
 					subsectionOff = newMenv.size();
 					// Update the Subsection 1 offset
 					*(unsigned int *)&(newMenv[40]) = subsectionOff;
@@ -1899,300 +1988,299 @@ string convertMeshToWpn(vector<VertexRelative> verts, vector<Face> faces, string
 	return converted;
 }
 
-string convertMeshToDae(vector<JointRelative> joints, vector<VertexGlobal> verts, vector<Face> faces, vector<Animation> anims, float adjustments[], float max, string name)
+string convertMeshToDae(vector<JointRelative> joints, vector<vector<VertexGlobal>> verts, vector<vector<Face>> faces, vector<Animation> anims, string name)
 {
 	string converted = "", numAsStr, tabbed;
 	stringstream ss;
 	// Convert the joint positions into relative vertices
-	vector<VertexRelative> jointsR = convertJointsToVerts(joints);
-	vector<VertexGlobal> jointsG;
+	vector<vector<VertexRelative>> jointsR = convertJointsToVerts(joints);
+	vector<vector<VertexGlobal>> jointsG;
 	vector<vector<float>> transformMat, translateMat, rotateMat;
 	vector<unsigned int> indexStack;
 	vector<bool> jointStatusStack;
-	unsigned int numTextures = getNumTextures(verts), numFacesOfTexture, rootJointIndex = getRootJointIndex(joints), counter, jointDepth, jointIndex, parentJointIndex, childJointIndex, numChildren, dimOff;
+	unsigned int numTextures = getNumTextures(verts), numFacesOfTexture, rootJointIndex = getRootJointIndex(joints), counter, jointDepth, jointIndex, parentJointIndex, childJointIndex, numChildren, dimOff, numMeshes = verts.size();
 	// The translation for the bind shape matrix
 	float translate[numDims];
-	// Get the root joint index
-	if (rootJointIndex < joints.size() && rootJointIndex < absoluteMaxJoints)
+	unsigned int fnStartInd = (unsigned int)name.find_last_of('\\') + 1;
+	// Remove the path from the filename if there is one
+	if (fnStartInd < name.size())
 	{
-		// Convert the relative positions to global positions
-		if (getVerticesGlobal(joints, jointsR, jointsG))
+		name = name.substr(fnStartInd, name.size() - fnStartInd);
+	}
+	if (numMeshes == faces.size())
+	{
+		// Get the root joint index
+		if (rootJointIndex < joints.size() && rootJointIndex < absoluteMaxJoints)
 		{
-			// Declare xml version and encoding
-			converted += "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
-			// Declare Collada version
-			converted += "<COLLADA xmlns=\"http://www.collada.org/2005/11/COLLADASchema\" version=\"1.4.1\">\n";
-			// Include the author, authoring tool, meter unit, and up axis
-			converted += "\t<asset>\n";
-			converted += "\t\t<contributor>\n";
-			converted += "\t\t\t<author>Hypercrown User</author>\n";
-			converted += "\t\t\t<authoring_tool>" + prog + " " + version + "</authoring_tool>\n";
-			converted += "\t\t</contributor>\n";
-			// Label the z axis as up
-			converted += "\t\t<up_axis>Z_UP</up_axis>\n";
-			converted += "\t</asset>\n";
-			// Create the image library for holding the textures
-			converted += "\t<library_images>\n";
-			for (unsigned int i = 0; i < numTextures; i++)
+			// Convert the relative positions to global positions
+			if (getVerticesGlobal(joints, jointsR, jointsG))
 			{
-				// Convert the texture index to a string
-				ss.clear();
-				ss.str("");
-				ss << i;
-				ss >> numAsStr;
-				// Create an image for texture i in the image library
-				converted += "\t\t<image id=\"texture" + numAsStr + "\">\n";
-				converted += "\t\t\t<init_from>" + name + "-" + numAsStr + ".png" + "</init_from>\n";
-				converted += "\t\t</image>\n";
-			}
-			converted += "\t</library_images>\n";
-			// Create the effect library for holding the material effects
-			converted += "\t<library_effects>\n";
-			for (unsigned int i = 0; i < numTextures; i++)
-			{
-				ss.clear();
-				ss.str("");
-				ss << i;
-				ss >> numAsStr;
-				converted += "\t\t<effect id=\"mat" + numAsStr + "-effect\">\n";
-				converted += "\t\t\t<profile_COMMON>\n";
-				converted += "\t\t\t\t<newparam sid=\"mat" + numAsStr + "-surface\">\n";
-				converted += "\t\t\t\t\t<surface type=\"2D\">\n";
-				converted += "\t\t\t\t\t\t<init_from>texture" + numAsStr + "</init_from>\n";
-				converted += "\t\t\t\t\t</surface>\n";
-				converted += "\t\t\t\t</newparam>\n";
-				converted += "\t\t\t\t<newparam sid=\"mat" + numAsStr + "-sampler\">\n";
-				converted += "\t\t\t\t\t<sampler2D>\n";
-				converted += "\t\t\t\t\t\t<source>mat" + numAsStr + "-surface</source>\n";
-				converted += "\t\t\t\t\t</sampler2D>\n";
-				converted += "\t\t\t\t</newparam>\n";
-				converted += "\t\t\t\t<technique sid=\"common\">\n";
-				converted += "\t\t\t\t\t<lambert>\n";
-				converted += "\t\t\t\t\t\t<diffuse>\n";
-				converted += "\t\t\t\t\t\t\t<texture texture=\"mat" + numAsStr + "-sampler\" texcoord=\"UVMap\"/>\n";
-				converted += "\t\t\t\t\t\t</diffuse>\n";
-				converted += "\t\t\t\t\t</lambert>\n";
-				converted += "\t\t\t\t</technique>\n";
-				converted += "\t\t\t</profile_COMMON>\n";
-				converted += "\t\t</effect>\n";
-			}
-			converted += "\t</library_effects>\n";
-			// Create material library for holding the materials
-			converted += "\t<library_materials>\n";
-			for (unsigned int i = 0; i < numTextures; i++)
-			{
-				ss.clear();
-				ss.str("");
-				ss << i;
-				ss >> numAsStr;
-				converted += "\t\t<material id=\"mat" + numAsStr + "\">\n";
-				converted += "\t\t\t<instance_effect url=\"#mat" + numAsStr + "-effect\"/>\n";
-				converted += "\t\t</material>\n";
-			}
-			converted += "\t</library_materials>\n";
-			// Create geometry library for holding the mesh data
-			converted += "\t<library_geometries>\n";
-			converted += "\t\t<geometry id=\"" + name + "-mesh\" name=\"" + name + "\">\n";
-			converted += "\t\t\t<mesh>\n";
-			converted += "\t\t\t\t<source id=\"" + name + "-mesh-pose\">\n";
-			ss.clear();
-			ss.str("");
-			ss << verts.size() * 3;
-			ss >> numAsStr;
-			converted += "\t\t\t\t\t<float_array id=\"" + name + "-mesh-pose-array\" count=\"" + numAsStr + "\"> ";
-			for (unsigned int i = 0; i < verts.size(); i++)
-			{
-				for (unsigned int j = 0; j < numDims; j++)
+				// Declare xml version and encoding
+				converted += "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
+				// Declare Collada version
+				converted += "<COLLADA xmlns=\"http://www.collada.org/2005/11/COLLADASchema\" version=\"1.4.1\">\n";
+				// Include the author, authoring tool, meter unit, and up axis
+				converted += "\t<asset>\n";
+				converted += "\t\t<contributor>\n";
+				converted += "\t\t\t<author>Hypercrown User</author>\n";
+				converted += "\t\t\t<authoring_tool>" + prog + " " + version + "</authoring_tool>\n";
+				converted += "\t\t</contributor>\n";
+				// Label the z axis as up
+				converted += "\t\t<up_axis>Z_UP</up_axis>\n";
+				converted += "\t</asset>\n";
+				// Create the image library for holding the textures
+				if (numTextures > 0)
 				{
-					ss.clear();
-					ss.str("");
-					ss << (verts[i].coordinates[j] - adjustments[j]) / max;
-					ss >> numAsStr;
-					converted += numAsStr + " ";
-				}
-			}
-			converted += "</float_array>\n";
-			converted += "\t\t\t\t\t<technique_common>\n";
-			ss.clear();
-			ss.str("");
-			ss << verts.size();
-			ss >> numAsStr;
-			converted += "\t\t\t\t\t\t<accessor source=\"#" + name + "-mesh-pose-array\" count=\"" + numAsStr + "\" stride=\"3\">\n";
-			converted += "\t\t\t\t\t\t\t<param name=\"X\" type=\"float\"/>\n";
-			converted += "\t\t\t\t\t\t\t<param name=\"Y\" type=\"float\"/>\n";
-			converted += "\t\t\t\t\t\t\t<param name=\"Z\" type=\"float\"/>\n";
-			converted += "\t\t\t\t\t\t</accessor>\n";
-			converted += "\t\t\t\t\t</technique_common>\n";
-			converted += "\t\t\t\t</source>\n";
-			converted += "\t\t\t\t<source id=\"" + name + "-normals\">\n";
-			ss.clear();
-			ss.str("");
-			ss << verts.size() * 3;
-			ss >> numAsStr;
-			converted += "\t\t\t\t\t<float_array id=\"" + name + "-normals-array\" count=\"" + numAsStr + "\"> ";
-			for (unsigned int i = 0; i < verts.size(); i++)
-			{
-				for (unsigned int j = 0; j < numDims; j++)
-				{
-					ss.clear();
-					ss.str("");
-					ss << verts[i].normal[j];
-					ss >> numAsStr;
-					converted += numAsStr + " ";
-				}
-			}
-			converted += "</float_array>\n";
-			converted += "\t\t\t\t\t<technique_common>\n";
-			ss.clear();
-			ss.str("");
-			ss << verts.size();
-			ss >> numAsStr;
-			converted += "\t\t\t\t\t\t<accessor source=\"#" + name + "-normals-array\" count=\"" + numAsStr + "\" stride=\"3\">\n";
-			converted += "\t\t\t\t\t\t\t<param name=\"X\" type=\"float\"/>\n";
-			converted += "\t\t\t\t\t\t\t<param name=\"Y\" type=\"float\"/>\n";
-			converted += "\t\t\t\t\t\t\t<param name=\"Z\" type=\"float\"/>\n";
-			converted += "\t\t\t\t\t\t</accessor>\n";
-			converted += "\t\t\t\t\t</technique_common>\n";
-			converted += "\t\t\t\t</source>\n";
-			converted += "\t\t\t\t<source id=\"" + name + "-texcoords\">\n";
-			ss.clear();
-			ss.str("");
-			ss << verts.size() * 2;
-			ss >> numAsStr;
-			converted += "\t\t\t\t\t<float_array id=\"" + name + "-texcoords-array\" count=\"" + numAsStr + "\"> ";
-			for (unsigned int i = 0; i < verts.size(); i++)
-			{
-				for (unsigned int j = 0; j < 2; j++)
-				{
-					ss.clear();
-					ss.str("");
-					ss << verts[i].textureMap[j];
-					ss >> numAsStr;
-					converted += numAsStr + " ";
-				}
-			}
-			converted += "</float_array>\n";
-			converted += "\t\t\t\t\t<technique_common>\n";
-			ss.clear();
-			ss.str("");
-			ss << verts.size();
-			ss >> numAsStr;
-			converted += "\t\t\t\t\t\t<accessor source=\"#" + name + "-texcoords-array\" count=\"" + numAsStr + "\" stride=\"2\">\n";
-			converted += "\t\t\t\t\t\t\t<param name=\"S\" type=\"float\"/>\n";
-			converted += "\t\t\t\t\t\t\t<param name=\"T\" type=\"float\"/>\n";
-			converted += "\t\t\t\t\t\t</accessor>\n";
-			converted += "\t\t\t\t\t</technique_common>\n";
-			converted += "\t\t\t\t</source>\n";
-			converted += "\t\t\t\t<vertices id=\"" + name + "-mesh-verts\">\n";
-			converted += "\t\t\t\t\t<input semantic=\"POSITION\" source=\"#" + name + "-mesh-pose\"/>\n";
-			converted += "\t\t\t\t</vertices>\n";
-			counter = 0;
-			for (unsigned int i = 0; i < numTextures; i++)
-			{
-				ss.clear();
-				ss.str("");
-				ss << i;
-				ss >> numAsStr;
-				converted += "\t\t\t\t<triangles material=\"mat" + numAsStr + "\" count=\"";
-				numFacesOfTexture = getNumFacesOfTexture(verts, faces, i);
-				ss.clear();
-				ss.str("");
-				ss << numFacesOfTexture;
-				ss >> numAsStr;
-				converted += numAsStr + "\">\n";
-				converted += "\t\t\t\t\t<input semantic=\"VERTEX\" source=\"#" + name + "-mesh-verts\" offset=\"0\"/>\n";
-				converted += "\t\t\t\t\t<input semantic=\"NORMAL\" source=\"#" + name + "-normals\" offset=\"0\"/>\n";
-				converted += "\t\t\t\t\t<input semantic=\"TEXCOORD\" source=\"#" + name + "-texcoords\" offset=\"0\"/>\n";
-				converted += "\t\t\t\t\t<p> ";
-				for (unsigned int j = 0; j < faces.size(); j++)
-				{
-					if (faces[j].vertexIndices[0] < verts.size() && verts[faces[j].vertexIndices[0]].textureIndex == i)
+					converted += "\t<library_images>\n";
+					for (unsigned int i = 0; i < numTextures; i++)
 					{
-						for (unsigned int k = 0; k < numVertsPerFace; k++)
+						string imageFilename = name + "-";
+						// Convert the texture index to a string
+						ss.clear();
+						ss.str("");
+						ss << i;
+						ss >> numAsStr;
+						imageFilename += numAsStr + ".png";
+						// Create an image for texture i in the image library
+						converted += "\t\t<image id=\"texture" + numAsStr + "\">\n";
+						converted += "\t\t\t<init_from>" + imageFilename + "</init_from>\n";
+						converted += "\t\t</image>\n";
+					}
+					converted += "\t</library_images>\n";
+				}
+				// Create the effect library for holding the material effects
+				converted += "\t<library_effects>\n";
+				for (unsigned int i = 0; i < numTextures || i == 0; i++)
+				{
+					ss.clear();
+					ss.str("");
+					ss << i;
+					ss >> numAsStr;
+					converted += "\t\t<effect id=\"mat" + numAsStr + "-effect\">\n";
+					converted += "\t\t\t<profile_COMMON>\n";
+					if (numTextures > 0)
+					{
+						converted += "\t\t\t\t<newparam sid=\"mat" + numAsStr + "-surface\">\n";
+						converted += "\t\t\t\t\t<surface type=\"2D\">\n";
+						converted += "\t\t\t\t\t\t<init_from>texture" + numAsStr + "</init_from>\n";
+						converted += "\t\t\t\t\t</surface>\n";
+						converted += "\t\t\t\t</newparam>\n";
+						converted += "\t\t\t\t<newparam sid=\"mat" + numAsStr + "-sampler\">\n";
+						converted += "\t\t\t\t\t<sampler2D>\n";
+						converted += "\t\t\t\t\t\t<source>mat" + numAsStr + "-surface</source>\n";
+						converted += "\t\t\t\t\t</sampler2D>\n";
+						converted += "\t\t\t\t</newparam>\n";
+					}
+					converted += "\t\t\t\t<technique sid=\"common\">\n";
+					converted += "\t\t\t\t\t<lambert>\n";
+					converted += "\t\t\t\t\t\t<diffuse>\n";
+					if (numTextures > 0)
+					{
+						converted += "\t\t\t\t\t\t\t<texture texture=\"mat" + numAsStr + "-sampler\" texcoord=\"UVMap\"/>\n";
+					}
+					else
+					{
+						converted += "\t\t\t\t\t\t\t<color>1.0 1.0 1.0 1.0</color>\n";
+					}
+					converted += "\t\t\t\t\t\t</diffuse>\n";
+					converted += "\t\t\t\t\t</lambert>\n";
+					converted += "\t\t\t\t</technique>\n";
+					converted += "\t\t\t</profile_COMMON>\n";
+					converted += "\t\t</effect>\n";
+				}
+				converted += "\t</library_effects>\n";
+				// Create material library for holding the materials
+				converted += "\t<library_materials>\n";
+				for (unsigned int i = 0; i < numTextures || i == 0; i++)
+				{
+					ss.clear();
+					ss.str("");
+					ss << i;
+					ss >> numAsStr;
+					converted += "\t\t<material id=\"mat" + numAsStr + "\">\n";
+					converted += "\t\t\t<instance_effect url=\"#mat" + numAsStr + "-effect\"/>\n";
+					converted += "\t\t</material>\n";
+				}
+				converted += "\t</library_materials>\n";
+				// Create geometry library for holding the mesh data
+				converted += "\t<library_geometries>\n";
+				for (unsigned int i = 0; i < numMeshes; i++)
+				{
+					string meshName = name + "-mesh";
+					ss.clear();
+					ss.str("");
+					ss << setfill('0') << setw(3) << i;
+					ss >> numAsStr;
+					meshName += numAsStr;
+					converted += "\t\t<geometry id=\"" + meshName + "\" name=\"" + meshName + "\">\n";
+					converted += "\t\t\t<mesh>\n";
+					converted += "\t\t\t\t<source id=\"" + meshName + "-pose\">\n";
+					ss.clear();
+					ss.str("");
+					ss << verts[i].size() * 3;
+					ss >> numAsStr;
+					converted += "\t\t\t\t\t<float_array id=\"" + meshName + "-pose-array\" count=\"" + numAsStr + "\"> ";
+					for (unsigned int j = 0; j < verts[i].size(); j++)
+					{
+						for (unsigned int k = 0; k < numDims; k++)
 						{
-							// Offset 0
 							ss.clear();
 							ss.str("");
-							ss << faces[j].vertexIndices[k];
+							ss << verts[i][j].coordinates[k];
 							ss >> numAsStr;
 							converted += numAsStr + " ";
 						}
 					}
-				}
-				converted += "</p>\n";
-				converted += "\t\t\t\t</triangles>\n";
-			}
-			converted += "\t\t\t</mesh>\n";
-			converted += "\t\t</geometry>\n";
-			converted += "\t</library_geometries>\n";
-			// Create controller library to hold the rig
-			converted += "\t<library_controllers>\n";
-			converted += "\t\t<controller id=\"" + name + "-skin\" name=\"" + name + "-skin\">\n";
-			converted += "\t\t\t<skin source=\"#" + name + "-mesh\">\n";
-			// Create bind shape matrix for overlaying the normalized model on the skeleton
-			converted += "\t\t\t\t<bind_shape_matrix> ";
-			// Construct the bind translation array assuming the model has been scaled to the range [-1, 1]
-			for (unsigned int i = 0; i < numDims; i++)
-			{
-				translate[i] = 0;
-			}
-			// Get the translation matrix using the bind translation
-			transformMat = getTranslationMatrix(translate);
-			for (unsigned int i = 0; i < 4; i++)
-			{
-				for (unsigned int j = 0; j < 4; j++)
-				{
+					converted += "</float_array>\n";
+					converted += "\t\t\t\t\t<technique_common>\n";
 					ss.clear();
 					ss.str("");
-					ss << transformMat[i][j];
+					ss << verts[i].size();
 					ss >> numAsStr;
-					converted += numAsStr + " ";
-				}
-			}
-			converted += "</bind_shape_matrix>\n";
-			// Create joint names
-			converted += "\t\t\t\t<source id=\"" + name + "-skin-joints\">\n";
-			ss.clear();
-			ss.str("");
-			ss << joints.size();
-			ss >> numAsStr;
-			converted += "\t\t\t\t\t<Name_array id=\"" + name + "-skin-joints-array\" count=\"" + numAsStr + "\"> ";
-			for (unsigned int i = 0; i < joints.size(); i++)
-			{
-				ss.clear();
-				ss.str("");
-				ss << setfill('0') << setw(3) << joints[i].ind;
-				ss >> numAsStr;
-				converted += "bone" + numAsStr + " ";
-			}
-			converted += "</Name_array>\n";
-			converted += "\t\t\t\t\t<technique_common>\n";
-			ss.clear();
-			ss.str("");
-			ss << joints.size();
-			ss >> numAsStr;
-			converted += "\t\t\t\t\t\t<accessor source=\"#" + name + "-skin-joints-array\" count=\"" + numAsStr + "\" stride=\"1\">\n";
-			converted += "\t\t\t\t\t\t\t<param name=\"JOINT\" type=\"name\"/>\n";
-			converted += "\t\t\t\t\t\t</accessor>\n";
-			converted += "\t\t\t\t\t</technique_common>\n";
-			converted += "\t\t\t\t</source>\n";
-			// Create the inverse bind matrices for each joint
-			converted += "\t\t\t\t<source id=\"" + name + "-skin-bind-poses\">\n";
-			ss.clear();
-			ss.str("");
-			ss << joints.size() * 16;
-			ss >> numAsStr;
-			converted += "\t\t\t\t\t<float_array id=\"" + name + "-skin-bind-poses-array\" count=\"" + numAsStr + "\"> \n";
-			tabbed = "\t\t\t\t\t\t";
-			for (unsigned int i = 0; i < joints.size(); i++)
-			{
-				// Reset the transform mat
-				if (getInverseBindMatrix(joints, i, transformMat, max))
-				{
-					converted += tabbed;
-					for (unsigned int j = 0; j < transformMat.size(); j++)
+					converted += "\t\t\t\t\t\t<accessor source=\"#" + meshName + "-pose-array\" count=\"" + numAsStr + "\" stride=\"3\">\n";
+					converted += "\t\t\t\t\t\t\t<param name=\"X\" type=\"float\"/>\n";
+					converted += "\t\t\t\t\t\t\t<param name=\"Y\" type=\"float\"/>\n";
+					converted += "\t\t\t\t\t\t\t<param name=\"Z\" type=\"float\"/>\n";
+					converted += "\t\t\t\t\t\t</accessor>\n";
+					converted += "\t\t\t\t\t</technique_common>\n";
+					converted += "\t\t\t\t</source>\n";
+					converted += "\t\t\t\t<source id=\"" + meshName + "-normals\">\n";
+					ss.clear();
+					ss.str("");
+					ss << verts[i].size() * 3;
+					ss >> numAsStr;
+					converted += "\t\t\t\t\t<float_array id=\"" + meshName + "-normals-array\" count=\"" + numAsStr + "\"> ";
+					for (unsigned int j = 0; j < verts[i].size(); j++)
 					{
-						for (unsigned int k = 0; k < transformMat[j].size(); k++)
+						for (unsigned int k = 0; k < numDims; k++)
+						{
+							ss.clear();
+							ss.str("");
+							ss << verts[i][j].normal[k];
+							ss >> numAsStr;
+							converted += numAsStr + " ";
+						}
+					}
+					converted += "</float_array>\n";
+					converted += "\t\t\t\t\t<technique_common>\n";
+					ss.clear();
+					ss.str("");
+					ss << verts[i].size();
+					ss >> numAsStr;
+					converted += "\t\t\t\t\t\t<accessor source=\"#" + meshName + "-normals-array\" count=\"" + numAsStr + "\" stride=\"3\">\n";
+					converted += "\t\t\t\t\t\t\t<param name=\"X\" type=\"float\"/>\n";
+					converted += "\t\t\t\t\t\t\t<param name=\"Y\" type=\"float\"/>\n";
+					converted += "\t\t\t\t\t\t\t<param name=\"Z\" type=\"float\"/>\n";
+					converted += "\t\t\t\t\t\t</accessor>\n";
+					converted += "\t\t\t\t\t</technique_common>\n";
+					converted += "\t\t\t\t</source>\n";
+					converted += "\t\t\t\t<source id=\"" + meshName + "-texcoords\">\n";
+					ss.clear();
+					ss.str("");
+					ss << verts[i].size() * 2;
+					ss >> numAsStr;
+					converted += "\t\t\t\t\t<float_array id=\"" + meshName + "-texcoords-array\" count=\"" + numAsStr + "\"> ";
+					for (unsigned int j = 0; j < verts[i].size(); j++)
+					{
+						for (unsigned int k = 0; k < 2; k++)
+						{
+							ss.clear();
+							ss.str("");
+							ss << verts[i][j].textureMap[k];
+							ss >> numAsStr;
+							converted += numAsStr + " ";
+						}
+					}
+					converted += "</float_array>\n";
+					converted += "\t\t\t\t\t<technique_common>\n";
+					ss.clear();
+					ss.str("");
+					ss << verts[i].size();
+					ss >> numAsStr;
+					converted += "\t\t\t\t\t\t<accessor source=\"#" + meshName + "-texcoords-array\" count=\"" + numAsStr + "\" stride=\"2\">\n";
+					converted += "\t\t\t\t\t\t\t<param name=\"S\" type=\"float\"/>\n";
+					converted += "\t\t\t\t\t\t\t<param name=\"T\" type=\"float\"/>\n";
+					converted += "\t\t\t\t\t\t</accessor>\n";
+					converted += "\t\t\t\t\t</technique_common>\n";
+					converted += "\t\t\t\t</source>\n";
+					converted += "\t\t\t\t<vertices id=\"" + meshName + "-verts\">\n";
+					converted += "\t\t\t\t\t<input semantic=\"POSITION\" source=\"#" + meshName + "-pose\"/>\n";
+					converted += "\t\t\t\t\t<input semantic=\"NORMAL\" source=\"#" + meshName + "-normals\"/>\n";
+					converted += "\t\t\t\t\t<input semantic=\"TEXCOORD\" source=\"#" + meshName + "-texcoords\"/>\n";
+					converted += "\t\t\t\t</vertices>\n";
+					counter = 0;
+					for (unsigned int j = 0; j < numTextures || j == 0; j++)
+					{
+						if (numTextures == 0)
+						{
+							numFacesOfTexture = faces[i].size();
+						}
+						else
+						{
+							numFacesOfTexture = getNumFacesOfTexture(verts[i], faces[i], j);
+						}
+						if (numFacesOfTexture > 0)
+						{
+							ss.clear();
+							ss.str("");
+							ss << j;
+							ss >> numAsStr;
+							converted += "\t\t\t\t<triangles material=\"mat" + numAsStr + "\" count=\"";
+							ss.clear();
+							ss.str("");
+							ss << numFacesOfTexture;
+							ss >> numAsStr;
+							converted += numAsStr + "\">\n";
+							converted += "\t\t\t\t\t<input semantic=\"VERTEX\" source=\"#" + meshName + "-verts\" offset=\"0\"/>\n";
+							converted += "\t\t\t\t\t<p> ";
+							for (unsigned int k = 0; k < faces[i].size(); k++)
+							{
+								if (faces[i][j].vertexIndices[0] < verts[i].size() && (verts[i][faces[i][j].vertexIndices[0]].textureIndex == j || numTextures == 0))
+								{
+									for (unsigned int l = 0; l < numVertsPerFace; l++)
+									{
+										// Offset 0
+										ss.clear();
+										ss.str("");
+										ss << faces[i][k].vertexIndices[l];
+										ss >> numAsStr;
+										converted += numAsStr + " ";
+									}
+								}
+							}
+							converted += "</p>\n";
+							converted += "\t\t\t\t</triangles>\n";
+						}
+					}
+					converted += "\t\t\t</mesh>\n";
+					converted += "\t\t</geometry>\n";
+				}
+				converted += "\t</library_geometries>\n";
+				// Create controller library to hold the rig
+				converted += "\t<library_controllers>\n";
+				for (unsigned int i = 0; i < numMeshes; i++)
+				{
+					string controllerName = name + "-skin", meshName = name + "-mesh";
+					ss.clear();
+					ss.str("");
+					ss << setfill('0') << setw(3) << i;
+					ss >> numAsStr;
+					controllerName += numAsStr;
+					meshName += numAsStr;
+					converted += "\t\t<controller id=\"" + controllerName + "\" name=\"" + controllerName + "\">\n";
+					converted += "\t\t\t<skin source=\"#" + meshName + "\">\n";
+					// Create bind shape matrix for overlaying the normalized model on the skeleton
+					converted += "\t\t\t\t<bind_shape_matrix> ";
+					// Construct the bind translation array assuming the model has been scaled to the range [-1, 1]
+					for (unsigned int j = 0; j < numDims; j++)
+					{
+						translate[j] = 0;
+					}
+					// Get the translation matrix using the bind translation
+					transformMat = getTranslationMatrix(translate);
+					for (unsigned int j = 0; j < 4; j++)
+					{
+						for (unsigned int k = 0; k < 4; k++)
 						{
 							ss.clear();
 							ss.str("");
@@ -2201,368 +2289,434 @@ string convertMeshToDae(vector<JointRelative> joints, vector<VertexGlobal> verts
 							converted += numAsStr + " ";
 						}
 					}
-					converted += "\n";
-				}
-				else
-				{
-					cout << "Error: Failed to get inverse bind matrix of joint " << i << endl;
-				}
-			}
-			converted += "\t\t\t\t\t</float_array>\n";
-			converted += "\t\t\t\t\t<technique_common>\n";
-			ss.clear();
-			ss.str("");
-			ss << joints.size();
-			ss >> numAsStr;
-			converted += "\t\t\t\t\t\t<accessor source=\"#" + name + "-skin-bind-poses-array\" count=\"" + numAsStr + "\" stride=\"16\">\n";
-			converted += "\t\t\t\t\t\t\t<param name=\"TRANSFORM\" type=\"float4x4\"/>\n";
-			converted += "\t\t\t\t\t\t</accessor>\n";
-			converted += "\t\t\t\t\t</technique_common>\n";
-			converted += "\t\t\t\t</source>\n";
-			// Create skin weights
-			converted += "\t\t\t\t<source id=\"" + name + "-skin-weights\">\n";
-			converted += "\t\t\t\t\t<float_array id=\"" + name + "-skin-weights-array\" count=\"1\">1</float_array>\n";
-			converted += "\t\t\t\t\t<technique_common>\n";
-			converted += "\t\t\t\t\t\t<accessor source=\"#" + name + "-skin-weights-array\" count=\"1\" stride=\"1\">\n";
-			converted += "\t\t\t\t\t\t\t<param name=\"WEIGHT\" type=\"float\"/>\n";
-			converted += "\t\t\t\t\t\t</accessor>\n";
-			converted += "\t\t\t\t\t</technique_common>\n";
-			converted += "\t\t\t\t</source>\n";
-			// Define the joints
-			converted += "\t\t\t\t<joints>\n";
-			converted += "\t\t\t\t\t<input semantic=\"JOINT\" source=\"#" + name + "-skin-joints\"/>\n";
-			converted += "\t\t\t\t\t<input semantic=\"INV_BIND_MATRIX\" source=\"#" + name + "-skin-bind-poses\"/>\n";
-			converted += "\t\t\t\t</joints>\n";
-			// Create VertexRelative Weights
-			ss.clear();
-			ss.str("");
-			ss << verts.size();
-			ss >> numAsStr;
-			converted += "\t\t\t\t<vertex_weights count=\"" + numAsStr + "\">\n";
-			converted += "\t\t\t\t\t<input semantic=\"JOINT\" source=\"#" + name + "-skin-joints\" offset=\"0\"/>\n";
-			converted += "\t\t\t\t\t<input semantic=\"WEIGHT\" source=\"#" + name + "-skin-weights\" offset=\"1\"/>\n";
-			converted += "\t\t\t\t\t<vcount> ";
-			for (unsigned int i = 0; i < verts.size(); i++)
-			{
-				converted += "1 ";
-			}
-			converted += "</vcount>\n";
-			converted += "\t\t\t\t\t<v> ";
-			for (unsigned int i = 0; i < verts.size(); i++)
-			{
-				ss.clear();
-				ss.str("");
-				ss << verts[i].originJointIndex;
-				ss >> numAsStr;
-				converted += numAsStr + " 0 ";
-			}
-			converted += "</v>\n";
-			converted += "\t\t\t\t</vertex_weights>\n";
-			converted += "\t\t\t</skin>\n";
-			converted += "\t\t</controller>\n";
-			converted += "\t</library_controllers>\n";
-			// Check if we need to add an animations library
-			if (anims.size() > 0)
-			{
-				converted += "\t<library_animations>\n";
-				for (unsigned int i = 0; i < anims.size(); i++)
-				{
-					Animation ai = anims[i];
-					unsigned int numKeyframes;
-					string numKeyframesAsStr, numAsStr2;
-					if (ai.keyframes.size() < ai.times.size())
+					converted += "</bind_shape_matrix>\n";
+					// Create joint names
+					converted += "\t\t\t\t<source id=\"" + controllerName + "-joints\">\n";
+					ss.clear();
+					ss.str("");
+					ss << joints.size();
+					ss >> numAsStr;
+					converted += "\t\t\t\t\t<Name_array id=\"" + controllerName + "-joints-array\" count=\"" + numAsStr + "\"> ";
+					for (unsigned int j = 0; j < joints.size(); j++)
 					{
-						numKeyframes = ai.keyframes.size();
+						ss.clear();
+						ss.str("");
+						ss << setfill('0') << setw(3) << joints[j].ind;
+						ss >> numAsStr;
+						converted += "bone" + numAsStr + " ";
+					}
+					converted += "</Name_array>\n";
+					converted += "\t\t\t\t\t<technique_common>\n";
+					ss.clear();
+					ss.str("");
+					ss << joints.size();
+					ss >> numAsStr;
+					converted += "\t\t\t\t\t\t<accessor source=\"#" + controllerName + "-joints-array\" count=\"" + numAsStr + "\" stride=\"1\">\n";
+					converted += "\t\t\t\t\t\t\t<param name=\"JOINT\" type=\"name\"/>\n";
+					converted += "\t\t\t\t\t\t</accessor>\n";
+					converted += "\t\t\t\t\t</technique_common>\n";
+					converted += "\t\t\t\t</source>\n";
+					// Create the inverse bind matrices for each joint
+					converted += "\t\t\t\t<source id=\"" + controllerName + "-bind-poses\">\n";
+					ss.clear();
+					ss.str("");
+					ss << joints.size() * 16;
+					ss >> numAsStr;
+					converted += "\t\t\t\t\t<float_array id=\"" + controllerName + "-bind-poses-array\" count=\"" + numAsStr + "\"> \n";
+					tabbed = "\t\t\t\t\t\t";
+					for (unsigned int j = 0; j < joints.size(); j++)
+					{
+						// Reset the transform mat
+						if (getInverseBindMatrix(joints, j, transformMat))
+						{
+							converted += tabbed;
+							for (unsigned int k = 0; k < transformMat.size(); k++)
+							{
+								for (unsigned int l = 0; l < transformMat[k].size(); l++)
+								{
+									ss.clear();
+									ss.str("");
+									ss << transformMat[k][l];
+									ss >> numAsStr;
+									converted += numAsStr + " ";
+								}
+							}
+							converted += "\n";
+						}
+						else
+						{
+							cout << "Error: Failed to get inverse bind matrix of joint " << j << endl;
+						}
+					}
+					converted += "\t\t\t\t\t</float_array>\n";
+					converted += "\t\t\t\t\t<technique_common>\n";
+					ss.clear();
+					ss.str("");
+					ss << joints.size();
+					ss >> numAsStr;
+					converted += "\t\t\t\t\t\t<accessor source=\"#" + controllerName + "-bind-poses-array\" count=\"" + numAsStr + "\" stride=\"16\">\n";
+					converted += "\t\t\t\t\t\t\t<param name=\"TRANSFORM\" type=\"float4x4\"/>\n";
+					converted += "\t\t\t\t\t\t</accessor>\n";
+					converted += "\t\t\t\t\t</technique_common>\n";
+					converted += "\t\t\t\t</source>\n";
+					// Create skin weights
+					converted += "\t\t\t\t<source id=\"" + controllerName + "-weights\">\n";
+					converted += "\t\t\t\t\t<float_array id=\"" + controllerName + "-weights-array\" count=\"1\">1</float_array>\n";
+					converted += "\t\t\t\t\t<technique_common>\n";
+					converted += "\t\t\t\t\t\t<accessor source=\"#" + controllerName + "-weights-array\" count=\"1\" stride=\"1\">\n";
+					converted += "\t\t\t\t\t\t\t<param name=\"WEIGHT\" type=\"float\"/>\n";
+					converted += "\t\t\t\t\t\t</accessor>\n";
+					converted += "\t\t\t\t\t</technique_common>\n";
+					converted += "\t\t\t\t</source>\n";
+					// Define the joints
+					converted += "\t\t\t\t<joints>\n";
+					converted += "\t\t\t\t\t<input semantic=\"JOINT\" source=\"#" + controllerName + "-joints\"/>\n";
+					converted += "\t\t\t\t\t<input semantic=\"INV_BIND_MATRIX\" source=\"#" + controllerName + "-bind-poses\"/>\n";
+					converted += "\t\t\t\t</joints>\n";
+					// Create VertexRelative Weights
+					ss.clear();
+					ss.str("");
+					ss << verts[i].size();
+					ss >> numAsStr;
+					converted += "\t\t\t\t<vertex_weights count=\"" + numAsStr + "\">\n";
+					converted += "\t\t\t\t\t<input semantic=\"JOINT\" source=\"#" + controllerName + "-joints\" offset=\"0\"/>\n";
+					converted += "\t\t\t\t\t<input semantic=\"WEIGHT\" source=\"#" + controllerName + "-weights\" offset=\"1\"/>\n";
+					converted += "\t\t\t\t\t<vcount> ";
+					for (unsigned int j = 0; j < verts[i].size(); j++)
+					{
+						converted += "1 ";
+					}
+					converted += "</vcount>\n";
+					converted += "\t\t\t\t\t<v> ";
+					for (unsigned int j = 0; j < verts[i].size(); j++)
+					{
+						ss.clear();
+						ss.str("");
+						ss << verts[i][j].originJointIndex;
+						ss >> numAsStr;
+						converted += numAsStr + " 0 ";
+					}
+					converted += "</v>\n";
+					converted += "\t\t\t\t</vertex_weights>\n";
+					converted += "\t\t\t</skin>\n";
+					converted += "\t\t</controller>\n";
+				}
+				converted += "\t</library_controllers>\n";
+				// Check if we need to add an animations library
+				if (anims.size() > 0)
+				{
+					converted += "\t<library_animations>\n";
+					for (unsigned int i = 0; i < anims.size(); i++)
+					{
+						Animation ai = anims[i];
+						unsigned int numKeyframes;
+						string numKeyframesAsStr, numAsStr2;
+						if (ai.keyframes.size() < ai.times.size())
+						{
+							numKeyframes = ai.keyframes.size();
+						}
+						else
+						{
+							numKeyframes = ai.times.size();
+						}
+						ss.clear();
+						ss.str("");
+						ss << numKeyframes;
+						ss >> numKeyframesAsStr;
+						ss.clear();
+						ss.str("");
+						ss << setfill('0') << setw(3) << i;
+						ss >> numAsStr;
+						converted += "\t\t<animation id=\"Anim" + numAsStr + "-anim\" name=\"Anim" + numAsStr + "\">\n";
+						converted += "\t\t\t<animation>\n";
+						converted += "\t\t\t\t<source id=\"Anim" + numAsStr + "-Matrix-animation-input\">\n";
+						converted += "\t\t\t\t\t<float_array id=\"Anim" + numAsStr + "-Matrix-animation-input-array\" count=\"" + numKeyframesAsStr + "\">\n";
+						for (unsigned int j = 0; j < numKeyframes; j++)
+						{
+							ss.clear();
+							ss.str("");
+							ss << ai.times[j];
+							ss >> numAsStr2;
+							converted += "\t\t\t\t\t\t" + numAsStr2 + "\n";
+						}
+						converted += "\t\t\t\t\t</float_array>\n";
+						converted += "\t\t\t\t\t<technique_common>\n";
+						converted += "\t\t\t\t\t\t<accessor source=\"#Anim" + numAsStr + "-Matrix-animation-input-array\" count=\"" + numKeyframesAsStr + "\">\n";
+						converted += "\t\t\t\t\t\t\t<param name=\"TIME\" type=\"float\"/>\n";
+						converted += "\t\t\t\t\t\t</accessor>\n";
+						converted += "\t\t\t\t\t</technique_common>\n";
+						converted += "\t\t\t\t</source>\n";
+						converted += "\t\t\t\t<source id=\"Anim" + numAsStr + "-Matrix-animation-output-transform\">\n";
+						ss.clear();
+						ss.str("");
+						ss << numKeyframes * 16;
+						ss >> numAsStr2;
+						converted += "\t\t\t\t\t<float_array id=\"Anim" + numAsStr + "-Matrix-animation-output-transform-array\" count=\"" + numAsStr2 + "\">\n";
+						for (unsigned int j = 0; j < numKeyframes; j++)
+						{
+							converted += "\t\t\t\t\t\t";
+							for (unsigned int k = 0; k < 4; k++)
+							{
+								for (unsigned int l = 0; l < 4; l++)
+								{
+									ss.clear();
+									ss.str("");
+									if (ai.keyframes[j].size() == 4 && ai.keyframes[j][0].size() == 4 && ai.keyframes[j][1].size() == 4 && ai.keyframes[j][2].size() == 4 && ai.keyframes[j][3].size() == 4)
+									{
+										ss << ai.keyframes[j][k][l];
+										ss >> numAsStr2;
+									}
+									else
+									{
+										ss << (k == l) ? 1 : 0;
+										ss >> numAsStr2;
+									}
+									converted += numAsStr2 + " ";
+								}
+							}
+							converted += "\n";
+						}
+						converted += "\t\t\t\t\t</float_array>\n";
+						converted += "\t\t\t\t\t<technique_common>\n";
+						converted += "\t\t\t\t\t\t<accessor source=\"#Anim" + numAsStr + "-Matrix-animation-output-transform-array\" count=\"" + numKeyframesAsStr + "\" stride=\"16\">\n";
+						converted += "\t\t\t\t\t\t\t<param type=\"float4x4\"/>\n";
+						converted += "\t\t\t\t\t\t</accessor>\n";
+						converted += "\t\t\t\t\t</technique_common>\n";
+						converted += "\t\t\t\t</source>\n";
+						converted += "\t\t\t\t<source id=\"Anim" + numAsStr + "-Interpolations\">\n";
+						converted += "\t\t\t\t\t<Name_array id=\"Anim" + numAsStr + "-Interpolations-array\" count=\"" + numKeyframesAsStr + "\">\n";
+						for (unsigned int j = 0; j < numKeyframes; j++)
+						{
+							converted += "\t\t\t\t\t\tLINEAR\n";
+						}
+						converted += "\t\t\t\t\t</Name_array>\n";
+						converted += "\t\t\t\t\t<technique_common>\n";
+						converted += "\t\t\t\t\t\t<accessor source=\"#Anim" + numAsStr + "-Interpolations-array\" count=\"" + numKeyframesAsStr + "\">\n";
+						converted += "\t\t\t\t\t\t\t<param type=\"name\"/>\n";
+						converted += "\t\t\t\t\t\t</accessor>\n";
+						converted += "\t\t\t\t\t</technique_common>\n";
+						converted += "\t\t\t\t</source>\n";
+						converted += "\t\t\t\t<sampler id=\"Anim" + numAsStr + "-Matrix-animation-transform\">\n";
+						converted += "\t\t\t\t\t<input semantic=\"INPUT\" source=\"#Anim" + numAsStr + "-Matrix-animation-input\"/>\n";
+						converted += "\t\t\t\t\t<input semantic=\"OUTPUT\" source=\"#Anim" + numAsStr + "-Matrix-animation-output-transform\"/>\n";
+						converted += "\t\t\t\t\t<input semantic=\"INTERPOLATION\" source=\"#Anim" + numAsStr + "-Interpolations\"/>\n";
+						converted += "\t\t\t\t</sampler>\n";
+						ss.clear();
+						ss.str("");
+						ss << setfill('0') << setw(3) << ai.jointInd;
+						ss >> numAsStr2;
+						converted += "\t\t\t\t<channel source=\"#Anim" + numAsStr + "-Matrix-animation-transform\" target=\"bone" + numAsStr2 + "/matrix\"/>\n";
+						converted += "\t\t\t</animation>\n";
+						converted += "\t\t</animation>\n";
+					}
+					converted += "\t</library_animations>\n";
+				}
+				// Create visual scene library to hold the scene
+				converted += "\t<library_visual_scenes>\n";
+				converted += "\t\t<visual_scene id=\"scene\" name=\"Scene\">\n";
+				// Create Skeleton Nodes
+				converted += "\t\t\t<node id=\"Armature\" name=\"Armature\" type=\"NODE\">\n";
+				// Add the root node to the stack
+				indexStack.push_back(rootJointIndex);
+				jointStatusStack.push_back(false);
+				// Reset the counter and jointDepth
+				counter = 0;
+				jointDepth = 0;
+				// Process the stack
+				while (indexStack.size() > 0) // Fix error with joint 291 / 292
+				{
+					// Check if this is a joint or a depth update
+					if (indexStack.back() < joints.size())
+					{
+						// Get the current joint index
+						jointIndex = indexStack.back();
+						// Get the parent joint index
+						parentJointIndex = joints[jointIndex].jointInfo.parentIndex;
+						// Construct tabs string
+						tabbed = "";
+						tabbed.append(jointDepth + 4, '\t');
+						// Check if we have already visited this joint
+						if (jointStatusStack.back())
+						{
+							// Add the extra techniques
+							converted += tabbed + "\t<extra>\n";
+							converted += tabbed + "\t\t<technique profile=\"blender\">\n";
+							// Get the parent's connected child index
+							if (parentJointIndex != absoluteMaxJoints)
+							{
+								childJointIndex = joints[parentJointIndex].jointInfo.childIndex;
+							}
+							else
+							{
+								childJointIndex = absoluteMaxJoints;
+							}
+							// Check if the parent is connected to this bone
+							if (childJointIndex == jointIndex)
+							{
+								converted += tabbed + "\t\t\t<connect sid=\"connect\" type=\"bool\">1</connect>\n";
+							}
+							// Get this joint's connected child index
+							childJointIndex = joints[jointIndex].jointInfo.childIndex;
+							if (joints[jointIndex].childrenIndices.size() == 0 || childJointIndex < joints.size() && joints[childJointIndex].childrenIndices.size() == 0)
+							{
+								for (unsigned int i = 0; i < numDims; i++)
+								{
+									char dimDisp = 'x' + i;
+									ss.clear();
+									ss.str("");
+									if (joints[jointIndex].childrenIndices.size() == 0)
+									{
+										ss << 0;
+									}
+									else
+									{
+										ss << jointsG[0][childJointIndex].coordinates[i] - jointsG[0][jointIndex].coordinates[i];
+									}
+									ss >> numAsStr;
+									converted += tabbed + "\t\t\t<tip_" + dimDisp + " sid=\"tip_" + dimDisp + "\" type=\"float\">" + numAsStr + "</tip_" + dimDisp + ">\n";
+								}
+							}
+							converted += tabbed + "\t\t</technique>\n";
+							converted += tabbed + "\t\t<technique_common/>\n";
+							converted += tabbed + "\t</extra>\n";
+							// Close the node
+							converted += tabbed + "</node>\n";
+							// Remove the joint from the stacks
+							indexStack.pop_back();
+							jointStatusStack.pop_back();
+						}
+						else
+						{
+							// Mark this joint as visited
+							jointStatusStack.back() = true;
+							// Get the number of children this joint has
+							numChildren = joints[jointIndex].childrenIndices.size();
+							// Create node for this joint
+							ss.clear();
+							ss.str("");
+							ss << setfill('0') << setw(3) << joints[jointIndex].ind;
+							ss >> numAsStr;
+							converted += tabbed + "<node id=\"bone" + numAsStr + "\" name=\"bone" + numAsStr + "\" sid=\"bone" + numAsStr + "\" type=\"JOINT\">\n";
+
+							// Construct the bind pose matrix for each joint in the following manner: trans{X, Y, Z} * rot{X} * rot{Z} * rot{Y} 
+							transformMat = eye(4);
+							// For each axis...
+							for (unsigned int i = 0; i < numDims; i++)
+							{
+								// Get the dim offset so that we access the dims in Y, Z, X order
+								dimOff = (i + 1) % numDims;
+								// Get the rotation matrix
+								rotateMat = getRotationMatrix(dimOff, joints[jointIndex].rotations[dimOff], 4);
+								// Combine the rotation matrix with the transform matrix
+								transformMat = matrixMultiply(rotateMat, transformMat);
+							}
+							// For each dimension
+							for (unsigned int i = 0; i < numDims; i++)
+							{
+								// Get the joint's relative coordinates
+								translate[i] = joints[jointIndex].coordinates[i];
+							}
+							translateMat = getTranslationMatrix(translate);
+							transformMat = matrixMultiply(translateMat, transformMat);
+							converted += tabbed + "\t<matrix> ";
+							for (unsigned int i = 0; i < transformMat.size(); i++)
+							{
+								for (unsigned int j = 0; j < transformMat[i].size(); j++)
+								{
+									ss.clear();
+									ss.str("");
+									ss << transformMat[i][j];
+									ss >> numAsStr;
+									converted += numAsStr + " ";
+								}
+							}
+							converted += "</matrix>\n";
+							// Update the counter
+							counter++;
+							// Check if there are chidren
+							if (numChildren > 0)
+							{
+								// Push an invalid index to mark we need to decrement the depth
+								indexStack.push_back(joints.size());
+								// Update the depth
+								jointDepth++;
+							}
+							// Add the joint's children to the stack
+							for (unsigned int i = numChildren - 1; i < numChildren; i--)
+							{
+								indexStack.push_back(joints[jointIndex].childrenIndices[i]);
+								jointStatusStack.push_back(false);
+							}
+						}
 					}
 					else
 					{
-						numKeyframes = ai.times.size();
+						// Update the depth
+						jointDepth--;
+						// Remove the depth update from the index stack
+						indexStack.pop_back();
 					}
-					ss.clear();
-					ss.str("");
-					ss << numKeyframes;
-					ss >> numKeyframesAsStr;
+				}
+				converted += "\t\t\t</node>\n";
+				// Create Mesh Node
+				converted += "\t\t\t<node id=\"" + name + "\" name=\"" + name + "\" type=\"NODE\">\n";
+				//converted += "\t\t\t\t<instance_geometry url=\"#" + name + "-mesh\" name=\"" + name + "\">\n";
+				for (unsigned int i = 0; i < numMeshes; i++)
+				{
+					string meshName = name + "-mesh", controllerName = name + "-skin";
 					ss.clear();
 					ss.str("");
 					ss << setfill('0') << setw(3) << i;
 					ss >> numAsStr;
-					converted += "\t\t<animation id=\"Anim" + numAsStr + "-anim\" name=\"Anim" + numAsStr + "\">\n";
-					converted += "\t\t\t<animation>\n";
-					converted += "\t\t\t\t<source id=\"Anim" + numAsStr + "-Matrix-animation-input\">\n";
-					converted += "\t\t\t\t\t<float_array id=\"Anim" + numAsStr + "-Matrix-animation-input-array\" count=\"" + numKeyframesAsStr + "\">\n";
-					for (unsigned int j = 0; j < numKeyframes; j++)
+					meshName += numAsStr;
+					controllerName += numAsStr;
+					converted += "\t\t\t\t<node id=\"" + meshName + "\" name=\"" + meshName + "\" type=\"NODE\">\n";
+					converted += "\t\t\t\t\t<instance_controller url=\"#" + controllerName + "\" name=\"" + controllerName + "\">\n";
+					converted += "\t\t\t\t\t\t<skeleton>#bone000</skeleton>\n";
+					converted += "\t\t\t\t\t\t<bind_material>\n";
+					converted += "\t\t\t\t\t\t\t<technique_common>\n";
+					for (unsigned int j = 0; j < numTextures || j == 0; j++)
 					{
-						ss.clear();
-						ss.str("");
-						ss << ai.times[j];
-						ss >> numAsStr2;
-						converted += "\t\t\t\t\t\t" + numAsStr2 + "\n";
-					}
-					converted += "\t\t\t\t\t</float_array>\n";
-					converted += "\t\t\t\t\t<technique_common>\n";
-					converted += "\t\t\t\t\t\t<accessor source=\"#Anim" + numAsStr + "-Matrix-animation-input-array\" count=\"" + numKeyframesAsStr + "\">\n";
-					converted += "\t\t\t\t\t\t\t<param name=\"TIME\" type=\"float\"/>\n";
-					converted += "\t\t\t\t\t\t</accessor>\n";
-					converted += "\t\t\t\t\t</technique_common>\n";
-					converted += "\t\t\t\t</source>\n";
-					converted += "\t\t\t\t<source id=\"Anim" + numAsStr + "-Matrix-animation-output-transform\">\n";
-					ss.clear();
-					ss.str("");
-					ss << numKeyframes * 16;
-					ss >> numAsStr2;
-					converted += "\t\t\t\t\t<float_array id=\"Anim" + numAsStr + "-Matrix-animation-output-transform-array\" count=\"" + numAsStr2 + "\">\n";
-					for (unsigned int j = 0; j < numKeyframes; j++)
-					{
-						converted += "\t\t\t\t\t\t";
-						for (unsigned int k = 0; k < 4; k++)
+						if (numTextures == 0 || getNumFacesOfTexture(verts[i], faces[i], j) > 0)
 						{
-							for (unsigned int l = 0; l < 4; l++)
-							{
-								ss.clear();
-								ss.str("");
-								if (ai.keyframes[j].size() == 4 && ai.keyframes[j][0].size() == 4 && ai.keyframes[j][1].size() == 4 && ai.keyframes[j][2].size() == 4 && ai.keyframes[j][3].size() == 4)
-								{
-									ss << ai.keyframes[j][k][l];
-									ss >> numAsStr2;
-								}
-								else
-								{
-									ss << (k == l) ? 1 : 0;
-									ss >> numAsStr2;
-								}
-								converted += numAsStr2 + " ";
-							}
+							ss.clear();
+							ss.str("");
+							ss << j;
+							ss >> numAsStr;
+							converted += "\t\t\t\t\t\t\t\t<instance_material symbol=\"mat" + numAsStr + "\" target=\"#mat" + numAsStr + "\">\n";
+							converted += "\t\t\t\t\t\t\t\t\t<bind_vertex_input semantic=\"UVMap\" input_semantic=\"TEXCOORD\"/>\n";
+							converted += "\t\t\t\t\t\t\t\t</instance_material>\n";
 						}
-						converted += "\n";
 					}
-					converted += "\t\t\t\t\t</float_array>\n";
-					converted += "\t\t\t\t\t<technique_common>\n";
-					converted += "\t\t\t\t\t\t<accessor source=\"#Anim" + numAsStr + "-Matrix-animation-output-transform-array\" count=\"" + numKeyframesAsStr + "\" stride=\"16\">\n";
-					converted += "\t\t\t\t\t\t\t<param type=\"float4x4\"/>\n";
-					converted += "\t\t\t\t\t\t</accessor>\n";
-					converted += "\t\t\t\t\t</technique_common>\n";
-					converted += "\t\t\t\t</source>\n";
-					converted += "\t\t\t\t<source id=\"Anim" + numAsStr + "-Interpolations\">\n";
-					converted += "\t\t\t\t\t<Name_array id=\"Anim" + numAsStr + "-Interpolations-array\" count=\"" + numKeyframesAsStr + "\">\n";
-					for (unsigned int j = 0; j < numKeyframes; j++)
-					{
-						converted += "\t\t\t\t\t\tLINEAR\n";
-					}
-					converted += "\t\t\t\t\t</Name_array>\n";
-					converted += "\t\t\t\t\t<technique_common>\n";
-					converted += "\t\t\t\t\t\t<accessor source=\"#Anim" + numAsStr + "-Interpolations-array\" count=\"" + numKeyframesAsStr + "\">\n";
-					converted += "\t\t\t\t\t\t\t<param type=\"name\"/>\n";
-					converted += "\t\t\t\t\t\t</accessor>\n";
-					converted += "\t\t\t\t\t</technique_common>\n";
-					converted += "\t\t\t\t</source>\n";
-					converted += "\t\t\t\t<sampler id=\"Anim" + numAsStr + "-Matrix-animation-transform\">\n";
-					converted += "\t\t\t\t\t<input semantic=\"INPUT\" source=\"#Anim" + numAsStr + "-Matrix-animation-input\"/>\n";
-					converted += "\t\t\t\t\t<input semantic=\"OUTPUT\" source=\"#Anim" + numAsStr + "-Matrix-animation-output-transform\"/>\n";
-					converted += "\t\t\t\t\t<input semantic=\"INTERPOLATION\" source=\"#Anim" + numAsStr + "-Interpolations\"/>\n";
-					converted += "\t\t\t\t</sampler>\n";
-					ss.clear();
-					ss.str("");
-					ss << setfill('0') << setw(3) << ai.jointInd;
-					ss >> numAsStr2;
-					converted += "\t\t\t\t<channel source=\"#Anim" + numAsStr + "-Matrix-animation-transform\" target=\"bone" + numAsStr2 + "/matrix\"/>\n";
-					converted += "\t\t\t</animation>\n";
-					converted += "\t\t</animation>\n";
+					converted += "\t\t\t\t\t\t\t</technique_common>\n";
+					converted += "\t\t\t\t\t\t</bind_material>\n";
+					//converted += "\t\t\t\t</instance_geometry>\n";
+					converted += "\t\t\t\t\t</instance_controller>\n";
+					converted += "\t\t\t\t</node>\n";
 				}
-				converted += "\t</library_animations>\n";
+				converted += "\t\t\t</node>\n";
+				converted += "\t\t</visual_scene>\n";
+				converted += "\t</library_visual_scenes>\n";
+				// Instantiate the scene
+				converted += "\t<scene>\n";
+				converted += "\t\t<instance_visual_scene url=\"#scene\"/>\n";
+				converted += "\t</scene>\n";
+				converted += "</COLLADA>\n";
 			}
-			// Create visual scene library to hold the scene
-			converted += "\t<library_visual_scenes>\n";
-			converted += "\t\t<visual_scene id=\"scene\" name=\"Scene\">\n";
-			// Create Skeleton Nodes
-			converted += "\t\t\t<node id=\"Armature\" name=\"Armature\" type=\"NODE\">\n";
-			// Add the root node to the stack
-			indexStack.push_back(rootJointIndex);
-			jointStatusStack.push_back(false);
-			// Reset the counter and jointDepth
-			counter = 0;
-			jointDepth = 0;
-			// Process the stack
-			while (indexStack.size() > 0) // Fix error with joint 291 / 292
+			else
 			{
-				// Check if this is a joint or a depth update
-				if (indexStack.back() < joints.size())
-				{
-					// Get the current joint index
-					jointIndex = indexStack.back();
-					// Get the parent joint index
-					parentJointIndex = joints[jointIndex].jointInfo.parentIndex;
-					// Construct tabs string
-					tabbed = "";
-					tabbed.append(jointDepth + 4, '\t');
-					// Check if we have already visited this joint
-					if (jointStatusStack.back())
-					{
-						// Add the extra techniques
-						converted += tabbed + "\t<extra>\n";
-						converted += tabbed + "\t\t<technique profile=\"blender\">\n";
-						// Get the parent's connected child index
-						if (parentJointIndex != absoluteMaxJoints)
-						{
-							childJointIndex = joints[parentJointIndex].jointInfo.childIndex;
-						}
-						else
-						{
-							childJointIndex = absoluteMaxJoints;
-						}
-						// Check if the parent is connected to this bone
-						if (childJointIndex == jointIndex)
-						{
-							converted += tabbed + "\t\t\t<connect sid=\"connect\" type=\"bool\">1</connect>\n";
-						}
-						// Get this joint's connected child index
-						childJointIndex = joints[jointIndex].jointInfo.childIndex;
-						if (joints[jointIndex].childrenIndices.size() == 0 || childJointIndex < joints.size() && joints[childJointIndex].childrenIndices.size() == 0)
-						{	
-							for (unsigned int i = 0; i < numDims; i++)
-							{
-								char dimDisp = 'x' + i;
-								ss.clear();
-								ss.str("");
-								if (joints[jointIndex].childrenIndices.size() == 0)
-								{
-									ss << 0;
-								}
-								else
-								{
-									ss << (jointsG[childJointIndex].coordinates[i] - jointsG[jointIndex].coordinates[i]) / max;
-								}
-								ss >> numAsStr;
-								converted += tabbed + "\t\t\t<tip_" + dimDisp + " sid=\"tip_" + dimDisp + "\" type=\"float\">" + numAsStr + "</tip_" + dimDisp + ">\n";
-							}
-						}
-						converted += tabbed + "\t\t</technique>\n";
-						converted += tabbed + "\t\t<technique_common/>\n";
-						converted += tabbed + "\t</extra>\n";
-						// Close the node
-						converted += tabbed + "</node>\n";
-						// Remove the joint from the stacks
-						indexStack.pop_back();
-						jointStatusStack.pop_back();
-					}
-					else
-					{
-						// Mark this joint as visited
-						jointStatusStack.back() = true;
-						// Get the number of children this joint has
-						numChildren = joints[jointIndex].childrenIndices.size();
-						// Create node for this joint
-						ss.clear();
-						ss.str("");
-						ss << setfill('0') << setw(3) << joints[jointIndex].ind;
-						ss >> numAsStr;
-						converted += tabbed + "<node id=\"bone" + numAsStr + "\" name=\"bone" + numAsStr + "\" sid=\"bone" + numAsStr + "\" type=\"JOINT\">\n";
-
-						// To-Do: Add matrix transform
-						// Construct the bind pose matrix for each joint in the following manner: trans{X, Y, Z} * rot{X} * rot{Z} * rot{Y} 
-						transformMat = eye(4);
-						// For each axis...
-						for (unsigned int i = 0; i < numDims; i++)
-						{
-							// Get the dim offset so that we access the dims in Y, Z, X order
-							dimOff = (i + 1) % numDims;
-							// Get the rotation matrix
-							rotateMat = getRotationMatrix(dimOff, joints[jointIndex].rotations[dimOff], 4);
-							// Combine the rotation matrix with the transform matrix
-							transformMat = matrixMultiply(rotateMat, transformMat);
-						}
-						// For each dimension
-						for (unsigned int i = 0; i < numDims; i++)
-						{
-							// Get the joint's relative coordinates
-							translate[i] = joints[jointIndex].coordinates[i] / max;
-						}
-						translateMat = getTranslationMatrix(translate);
-						transformMat = matrixMultiply(translateMat, transformMat);
-						converted += tabbed + "\t<matrix> ";
-						for (unsigned int i = 0; i < transformMat.size(); i++)
-						{
-							for (unsigned int j = 0; j < transformMat[i].size(); j++)
-							{
-								ss.clear();
-								ss.str("");
-								ss << transformMat[i][j];
-								ss >> numAsStr;
-								converted += numAsStr + " ";
-							}
-						}
-						converted += "</matrix>\n";
-						// Update the counter
-						counter++;
-						// Check if there are chidren
-						if (numChildren > 0)
-						{
-							// Push an invalid index to mark we need to decrement the depth
-							indexStack.push_back(joints.size());
-							// Update the depth
-							jointDepth++;
-						}
-						// Add the joint's children to the stack
-						for (unsigned int i = numChildren - 1; i < numChildren; i--)
-						{
-							indexStack.push_back(joints[jointIndex].childrenIndices[i]);
-							jointStatusStack.push_back(false);
-						}
-					}
-				}
-				else
-				{
-					// Update the depth
-					jointDepth--;
-					// Remove the depth update from the index stack
-					indexStack.pop_back();
-				}
+				cout << "Error: Unable to get global positions of joints" << endl;
 			}
-			converted += "\t\t\t</node>\n";
-			// Create Mesh Node
-			converted += "\t\t\t<node id=\"" + name + "\" name=\"" + name + "\" type=\"NODE\">\n";
-			//converted += "\t\t\t\t<instance_geometry url=\"#" + name + "-mesh\" name=\"" + name + "\">\n";
-			converted += "\t\t\t\t<instance_controller url=\"#" + name + "-skin\" name=\"" + name + "\">\n";
-			converted += "\t\t\t\t\t<skeleton>#Joint0</skeleton>\n";
-			converted += "\t\t\t\t\t<bind_material>\n";
-			converted += "\t\t\t\t\t\t<technique_common>\n";
-			for (unsigned int i = 0; i < numTextures; i++)
-			{
-				ss.clear();
-				ss.str("");
-				ss << i;
-				ss >> numAsStr;
-				converted += "\t\t\t\t\t\t\t<instance_material symbol=\"mat" + numAsStr + "\" target=\"#mat" + numAsStr + "\">\n";
-				converted += "\t\t\t\t\t\t\t\t<bind_vertex_input semantic=\"UVMap\" input_semantic=\"TEXCOORD\"/>\n";
-				converted += "\t\t\t\t\t\t\t</instance_material>\n";
-			}
-			converted += "\t\t\t\t\t\t</technique_common>\n";
-			converted += "\t\t\t\t\t</bind_material>\n";
-			//converted += "\t\t\t\t</instance_geometry>\n";
-			converted += "\t\t\t\t</instance_controller>\n";
-			converted += "\t\t\t</node>\n";
-			converted += "\t\t</visual_scene>\n";
-			converted += "\t</library_visual_scenes>\n";
-			// Instantiate the scene
-			converted += "\t<scene>\n";
-			converted += "\t\t<instance_visual_scene url=\"#scene\"/>\n";
-			converted += "\t</scene>\n";
-			converted += "</COLLADA>\n";
 		}
 		else
 		{
-			cout << "Error: Unable to get global positions of joints" << endl;
+			cout << "Error: Unable to find root joint" << endl;
 		}
 	}
 	else
 	{
-		cout << "Error: Unable to find root joint" << endl;
+		cout << "Error: Invalid mesh" << endl;
 	}
-	return converted;
-}
-
-string convertSkeletonToObj(vector<JointRelative> joints, unsigned int maxJoints)
-{
-	string converted = "";
 	return converted;
 }
 
@@ -2598,17 +2752,17 @@ void textureToRaw(Texture t, unsigned char *&rawTexture)
 		unsigned int colorInd = t.indices[i];
 		if (colorInd < t.palette.numColors)
 		{
-			rawTexture[i * 4] = t.palette.r[colorInd];
-			rawTexture[i * 4 + 1] = t.palette.g[colorInd];
-			rawTexture[i * 4 + 2] = t.palette.b[colorInd];
-			rawTexture[i * 4 + 3] = t.palette.a[colorInd];
+			rawTexture[i * bytesPerPixel] = t.palette.r[colorInd];
+			rawTexture[i * bytesPerPixel + 1] = t.palette.g[colorInd];
+			rawTexture[i * bytesPerPixel + 2] = t.palette.b[colorInd];
+			rawTexture[i * bytesPerPixel + 3] = t.palette.a[colorInd];
 		}
 		else
 		{
-			rawTexture[i * 4] = 0;
-			rawTexture[i * 4 + 1] = 0;
-			rawTexture[i * 4 + 2] = 0;
-			rawTexture[i * 4 + 3] = 0;
+			rawTexture[i * bytesPerPixel] = 0;
+			rawTexture[i * bytesPerPixel + 1] = 0;
+			rawTexture[i * bytesPerPixel + 2] = 0;
+			rawTexture[i * bytesPerPixel + 3] = 0;
 		}
 	}
 	return;
@@ -2641,24 +2795,28 @@ vector<unsigned char> textureToRaw(Texture t)
 }
 
 // Returns the number of textures in an mdls file, returns 0 if a different file is passed
-unsigned int getNumTextures(vector<VertexRelative> verts)
+unsigned int getNumTextures(vector<vector<VertexRelative>> verts)
 {
-	unsigned int numTextures = 0, numVerts = verts.size(), textureInd;
-	for (unsigned int i = 0; i < numVerts; i++)
+	unsigned int numTextures = 0, numMeshes = verts.size(), numVerts, textureInd;
+	for (unsigned int i = 0; i < numMeshes; i++)
 	{
-		textureInd = verts[i].textureIndex;
-		if (textureInd >= numTextures)
+		numVerts = verts[i].size();
+		for (unsigned int j = 0; j < numVerts; j++)
 		{
-			numTextures = textureInd + 1;
+			textureInd = verts[i][j].textureIndex;
+			if (textureInd >= numTextures)
+			{
+				numTextures = textureInd + 1;
+			}
 		}
 	}
 	return numTextures;
 }
 
 // This function doesn't care about the vertex coordinates
-unsigned int getNumTextures(vector<VertexGlobal> verts)
+unsigned int getNumTextures(vector<vector<VertexGlobal>> verts)
 {
-	return getNumTextures(*(vector<VertexRelative> *)&(verts));
+	return getNumTextures(*(vector<vector<VertexRelative>> *)&(verts));
 }
 
 unsigned int getNumMdlsTextures(string raw)
@@ -2743,8 +2901,8 @@ unsigned int getNumWpnTextures(string raw)
 vector<string> getMdlsSpecialEffects(string raw)
 {
 	vector<string> effects;
-	unsigned int numSections, readOffset = 0, sectionOffset, sectionLen, sectionHeaderLen = 16, numSubsections;
-	string specialEffectSection, effect;
+	unsigned int numSections, readOffset = 0, sectionOffset, sectionLen, sectionHeaderLen = 16;
+	string specialEffectSection;
 	// Make sure there is data to read
 	if (raw.size() >= (readOffset + 4))
 	{
@@ -2768,277 +2926,14 @@ vector<string> getMdlsSpecialEffects(string raw)
 				if (sectionLen > 0)
 				{
 					// Make sure there is data to read and that there is a section header
-					if (raw.size() >= (sectionOffset + sectionLen) && (sectionLen >= 16))
+					if (raw.size() >= (sectionOffset + sectionLen) && (sectionLen >= sectionHeaderLen))
 					{
 						specialEffectSection = raw.substr(sectionOffset, sectionLen);
-						// Move to the start of the section
 						readOffset = 0;
 						// Check the section id
 						if (*(unsigned int *)&(specialEffectSection[readOffset]) == 130)
 						{
-							unsigned int numEntries = 0;
-							vector<unsigned int> entryOffs;
-							vector<string> entryMetaData;
-							// Move to number of subsection type 0 entries
-							readOffset += 12;
-							// Get the number of entries
-							numEntries = *(unsigned int *)&(specialEffectSection[readOffset]);
-							readOffset += 4;
-							entryOffs.reserve(numEntries);
-							entryMetaData.reserve(numEntries);
-							// For each entry, read the meta data and add it to the effect string
-							for (unsigned int i = 0; i < numEntries; i++)
-							{
-								entryOffs.push_back(*(unsigned int *)&(specialEffectSection[readOffset]));
-								readOffset += 4;
-								entryMetaData.push_back(specialEffectSection.substr(readOffset, 28));
-								readOffset += 28;
-							}
-							if (sectionLen >= (readOffset + 4))
-							{
-								vector<unsigned int> subsectionOffsets;
-								numSubsections = *(unsigned int *)&(specialEffectSection[readOffset]);
-								readOffset += 4;
-								subsectionOffsets.reserve(numSubsections);
-								if (sectionLen >= (readOffset + (numSubsections * 4)))
-								{
-									// Store each subsection offset
-									for (unsigned int i = 0; i < numSubsections; i++)
-									{
-										subsectionOffsets.push_back(*(unsigned int *)&(specialEffectSection[readOffset]));
-										readOffset += 4;
-									}
-									// Parse each subsection
-									for (unsigned int i = 0; i < numSubsections; i++)
-									{
-										unsigned int finalSubsubsectionType = 5, effectLen = 0, associatedEntries = 0;
-										for (unsigned int j = 0; j < numEntries; j++)
-										{
-											if (entryOffs[j] == subsectionOffsets[i])
-											{
-												associatedEntries++;
-											}
-										}
-										// Add the spe meta data to the start of the effect string
-										effect = "SPFX";
-										effect.append((char *)&(associatedEntries), sizeof(unsigned int));
-										for (unsigned int j = 0; j < numEntries; j++)
-										{
-											if (entryOffs[j] == subsectionOffsets[i])
-											{
-												effect += entryMetaData[j];
-											}
-										}
-										// Word align the meta data
-										if (effect.size() % 16 > 0)
-										{
-											effect.append(16 - (effect.size() % 16), 0);
-										}
-										// Move to the start of the subsection
-										readOffset = subsectionOffsets[i];
-										// Make sure the offset is valid
-										if (sectionLen >= (readOffset + 4))
-										{
-											if (*(unsigned int *)&(specialEffectSection[readOffset]) == 150)
-											{
-												vector<vector<unsigned int>> subsubsectionOffsets;
-												subsubsectionOffsets.reserve(5);
-												// Move to the number of type 0 subsubsections
-												readOffset += 4;
-												// For each subsubsection type
-												for (unsigned int j = 0; j < 5; j++)
-												{
-													if (sectionLen >= (readOffset + 4))
-													{
-														unsigned int numSubsubsections = *(unsigned int *)&(specialEffectSection[readOffset]);
-														readOffset += 4;
-														subsubsectionOffsets.push_back(vector<unsigned int>());
-														subsubsectionOffsets[j].reserve(numSubsubsections);
-														if (sectionLen >= (readOffset + (numSubsubsections * 4)))
-														{
-															for (unsigned int k = 0; k < numSubsubsections; k++)
-															{
-																subsubsectionOffsets[j].push_back(*(unsigned int *)&(specialEffectSection[readOffset]));
-																readOffset += 4;
-															}
-														}
-														else
-														{
-															cout << "Error: Invalid number of subsubsections in subsection " << i << endl;
-														}
-													}
-													else
-													{
-														cout << "Error: Invalid Subsection " << i << endl;
-													}
-												}
-												for (unsigned int j = 4; j < 5; j--)
-												{
-													if (subsubsectionOffsets[j].size() != 0)
-													{
-														finalSubsubsectionType = j;
-														break;
-													}
-												}
-												if (finalSubsubsectionType < 5)
-												{
-													// Get the offset to the final subsubsection
-													unsigned int subsubsectionLen = 0, finalSubsubsectionOffset = subsubsectionOffsets[finalSubsubsectionType].back();
-													// Set the length equal to the last offset
-													effectLen = finalSubsubsectionOffset;
-													// Move to the start of the subsubsection
-													readOffset = subsectionOffsets[i] + finalSubsubsectionOffset;
-													// Add the length of the final subsubsection by parsing it
-													switch (finalSubsubsectionType)
-													{
-													case 0:
-														// Make sure there is enough data for the header
-														if (sectionLen >= (readOffset + 288))
-														{
-															// Get the offset to the last part of this subsubsection
-															unsigned int lastOffset = *(unsigned int *)&(raw[readOffset + 12]);
-															// Initialize the subsubsection length
-															subsubsectionLen = lastOffset + 272;
-															// Move to the start of the last section
-															readOffset += subsubsectionLen;
-															if (sectionLen >= readOffset + 4)
-															{
-																// Get the number of values in the last section
-																unsigned int numVals = *(unsigned int *)&(specialEffectSection[readOffset]), remainder;
-																// Add the length of the last part to the subsubsection length
-																subsubsectionLen += ((numVals + 1) * 4);
-																// Determine if the subsubsection needs to be padded
-																remainder = subsubsectionLen % 16;
-																if (remainder > 0)
-																{
-																	// Pad the length to word align the subsubsection
-																	subsubsectionLen += (16 - remainder);
-																}
-																if (sectionLen >= (readOffset + subsubsectionLen))
-																{
-																	effectLen += subsubsectionLen;
-																}
-																else
-																{
-																	cout << "Error: Missing values" << endl;
-																}
-															}
-															else
-															{
-																cout << "Error: Missing the number of values" << endl;
-															}
-														}
-														else
-														{
-															cout << "Error: Missing Subsubsection header" << endl;
-														}
-														break;
-													case 1:
-														// Make sure there is enough data for the header
-														if (sectionLen >= (readOffset + 32))
-														{
-															unsigned int indsLen;
-															unsigned short paletteLen = 0x400;
-															indsLen = *(unsigned int *)&(specialEffectSection[readOffset + 27]) & 0xFFFFFF;
-															readOffset += 32;
-															subsubsectionLen = indsLen + paletteLen + 32;
-															// Make sure the data for the indices exists
-															if (sectionLen >= subsubsectionLen)
-															{
-																effectLen += subsubsectionLen;
-															}
-															else
-															{
-																cout << "Error: Missing image data" << endl;
-															}
-														}
-														else
-														{
-															cout << "Error: Missing Subsubsection header" << endl;
-														}
-														break;
-													case 2:
-														// Make sure there is enough data for the header
-														if (sectionLen >= (readOffset + 32))
-														{
-															subsubsectionLen = ((*(unsigned short *)&(specialEffectSection[readOffset + 30])) + 16);
-															if (sectionLen >= (readOffset + subsubsectionLen))
-															{
-																effectLen += subsubsectionLen;
-															}
-															else
-															{
-																cout << "Error: Invalid subsubsection length" << endl;
-															}
-														}
-														else
-														{
-															cout << "Error: Missing Subsubsection header" << endl;
-														}
-														break;
-													case 3:
-														// To-Do: Parse Type 3 Entry
-														cout << "Error: Effect " << i << " ends with a Type 3 Subsubsection which currently is unable to be parsed" << endl;
-														break;
-													case 4:
-														// Make sure there is enough data for the header
-														if (sectionLen >= (readOffset + 12))
-														{
-															unsigned int numVals = *(unsigned int *)&(specialEffectSection[readOffset + 8]), remainder;
-															subsubsectionLen = (numVals * 2) + 12;
-															// Check if the subsubsection requires padding
-															remainder = subsubsectionLen % 16;
-															if (remainder > 0)
-															{
-																// Add the padding to the length
-																subsubsectionLen += (16 - remainder);
-															}
-															if (sectionLen >= (readOffset + subsubsectionLen))
-															{
-																effectLen += subsubsectionLen;
-															}
-															else
-															{
-																cout << "Error: Invalid subsubsection length" << endl;
-															}
-														}
-														else
-														{
-															cout << "Error: Missing Subsubsection header" << endl;
-														}
-														break;
-													default:
-														cout << "You shouldn't be able to get here" << endl;
-														effectLen = 64;
-													}
-												}
-												else
-												{
-													// There are no subsubsections? Just give the minimum length of the header?
-													effectLen = 64;
-												}
-												if (effectLen > 0)
-												{
-													effect += specialEffectSection.substr(subsectionOffsets[i], effectLen);
-													effects.push_back(effect);
-												}
-											}
-											else
-											{
-												cout << "Error: Subsection ID is incorrect" << endl;
-											}
-										}
-										else
-										{
-											cout << "Error: Invalid subsection offset for subsection " << i << endl;
-										}
-									}
-								}
-							}
-							else
-							{
-								cout << "Error: Section Header isn't complete" << endl;
-							}
+							effects = getSPFXSpecialEffects(specialEffectSection);
 						}
 						else
 						{
@@ -3071,7 +2966,7 @@ vector<string> getMdlsSpecialEffects(string raw)
 vector<string> getWpnSpecialEffects(string raw)
 {
 	vector<string> effects;
-	unsigned int numSections, readOffset = 0, sectionOffset, sectionLen, sectionHeaderLen = 16, numSubsections;
+	unsigned int numSections, readOffset = 0, sectionOffset, sectionLen, sectionHeaderLen = 16;
 	string specialEffectSection, effect;
 	// Make sure there is data to read
 	if (raw.size() >= (readOffset + 4))
@@ -3096,282 +2991,10 @@ vector<string> getWpnSpecialEffects(string raw)
 				if (sectionLen > 0)
 				{
 					// Make sure there is data to read and that there is a section header
-					if (raw.size() >= (sectionOffset + sectionLen) && (sectionLen >= 16))
+					if (raw.size() >= (sectionOffset + sectionLen) && (sectionLen >= sectionHeaderLen))
 					{
 						specialEffectSection = raw.substr(sectionOffset, sectionLen);
-						// Move to the start of the section
-						readOffset = 0;
-						// Check the section id
-						if (*(unsigned int *)&(specialEffectSection[readOffset]) == 130)
-						{
-							unsigned int numEntries = 0;
-							vector<unsigned int> entryOffs;
-							vector<string> entryMetaData;
-							// Move to number of subsection type 0 entries
-							readOffset += 12;
-							// Get the number of entries
-							numEntries = *(unsigned int *)&(specialEffectSection[readOffset]);
-							readOffset += 4;
-							entryOffs.reserve(numEntries);
-							entryMetaData.reserve(numEntries);
-							// For each entry, read the meta data and add it to the effect string
-							for (unsigned int i = 0; i < numEntries; i++)
-							{
-								entryOffs.push_back(*(unsigned int *)&(specialEffectSection[readOffset]));
-								readOffset += 4;
-								entryMetaData.push_back(specialEffectSection.substr(readOffset, 28));
-								readOffset += 28;
-							}
-							if (sectionLen >= (readOffset + 4))
-							{
-								vector<unsigned int> subsectionOffsets;
-								numSubsections = *(unsigned int *)&(specialEffectSection[readOffset]);
-								readOffset += 4;
-								subsectionOffsets.reserve(numSubsections);
-								if (sectionLen >= (readOffset + (numSubsections * 4)))
-								{
-									// Store each subsection offset
-									for (unsigned int i = 0; i < numSubsections; i++)
-									{
-										subsectionOffsets.push_back(*(unsigned int *)&(specialEffectSection[readOffset]));
-										readOffset += 4;
-									}
-									// Parse each subsection
-									for (unsigned int i = 0; i < numSubsections; i++)
-									{
-										unsigned int finalSubsubsectionType = 5, effectLen = 0, associatedEntries = 0;
-										for (unsigned int j = 0; j < numEntries; j++)
-										{
-											if (entryOffs[j] == subsectionOffsets[i])
-											{
-												associatedEntries++;
-											}
-										}
-										// Add the spe meta data to the start of the effect string
-										effect = "SPFX";
-										effect.append((char *)&(associatedEntries), sizeof(unsigned int));
-										for (unsigned int j = 0; j < numEntries; j++)
-										{
-											if (entryOffs[j] == subsectionOffsets[i])
-											{
-												effect += entryMetaData[j];
-											}
-										}
-										// Word align the meta data
-										if (effect.size() % 16 > 0)
-										{
-											effect.append(16 - (effect.size() % 16), 0);
-										}
-										// Move to the start of the subsection
-										readOffset = subsectionOffsets[i];
-										// Make sure the offset is valid
-										if (sectionLen >= (readOffset + 4))
-										{
-											if (*(unsigned int *)&(specialEffectSection[readOffset]) == 150)
-											{
-												vector<vector<unsigned int>> subsubsectionOffsets;
-												subsubsectionOffsets.reserve(5);
-												// Move to the number of type 0 subsubsections
-												readOffset += 4;
-												// For each subsubsection type
-												for (unsigned int j = 0; j < 5; j++)
-												{
-													if (sectionLen >= (readOffset + 4))
-													{
-														unsigned int numSubsubsections = *(unsigned int *)&(specialEffectSection[readOffset]);
-														readOffset += 4;
-														subsubsectionOffsets.push_back(vector<unsigned int>());
-														subsubsectionOffsets[j].reserve(numSubsubsections);
-														if (sectionLen >= (readOffset + (numSubsubsections * 4)))
-														{
-															for (unsigned int k = 0; k < numSubsubsections; k++)
-															{
-																subsubsectionOffsets[j].push_back(*(unsigned int *)&(specialEffectSection[readOffset]));
-																readOffset += 4;
-															}
-														}
-														else
-														{
-															cout << "Error: Invalid number of subsubsections in subsection " << i << endl;
-														}
-													}
-													else
-													{
-														cout << "Error: Invalid Subsection " << i << endl;
-													}
-												}
-												for (unsigned int j = 4; j < 5; j--)
-												{
-													if (subsubsectionOffsets[j].size() != 0)
-													{
-														finalSubsubsectionType = j;
-														break;
-													}
-												}
-												if (finalSubsubsectionType < 5)
-												{
-													// Get the offset to the final subsubsection
-													unsigned int subsubsectionLen = 0, finalSubsubsectionOffset = subsubsectionOffsets[finalSubsubsectionType].back();
-													// Set the length equal to the last offset
-													effectLen = finalSubsubsectionOffset;
-													// Move to the start of the subsubsection
-													readOffset = subsectionOffsets[i] + finalSubsubsectionOffset;
-													// Add the length of the final subsubsection by parsing it
-													switch (finalSubsubsectionType)
-													{
-													case 0:
-														// Make sure there is enough data for the header
-														if (sectionLen >= (readOffset + 288))
-														{
-															// Get the offset to the last part of this subsubsection
-															unsigned int lastOffset = *(unsigned int *)&(specialEffectSection[readOffset + 12]);
-															// Initialize the subsubsection length
-															subsubsectionLen = lastOffset + 272;
-															// Move to the start of the last section
-															readOffset += subsubsectionLen;
-															if (sectionLen >= readOffset + 4)
-															{
-																// Get the number of values in the last section
-																unsigned int numVals = *(unsigned int *)&(specialEffectSection[readOffset]), remainder;
-																// Add the length of the last part to the subsubsection length
-																subsubsectionLen += ((numVals + 1) * 4);
-																// Determine if the subsubsection needs to be padded
-																remainder = subsubsectionLen % 16;
-																if (remainder > 0)
-																{
-																	// Pad the length to word align the subsubsection
-																	subsubsectionLen += (16 - remainder);
-																}
-																if (sectionLen >= (readOffset + subsubsectionLen))
-																{
-																	effectLen += subsubsectionLen;
-																}
-																else
-																{
-																	cout << "Error: Missing values" << endl;
-																}
-															}
-															else
-															{
-																cout << "Error: Missing the number of values" << endl;
-															}
-														}
-														else
-														{
-															cout << "Error: Missing Subsubsection header" << endl;
-														}
-														break;
-													case 1:
-														// Make sure there is enough data for the header
-														if (sectionLen >= (readOffset + 32))
-														{
-															unsigned int indsLen;
-															unsigned short paletteLen = 0x400;
-															indsLen = *(unsigned int *)&(specialEffectSection[readOffset + 27]) & 0xFFFFFF;
-															readOffset += 32;
-															subsubsectionLen = indsLen + paletteLen + 32;
-															// Make sure the data for the indices exists
-															if (sectionLen >= subsubsectionLen)
-															{
-																effectLen += subsubsectionLen;
-															}
-															else
-															{
-																cout << "Error: Missing image data" << endl;
-															}
-														}
-														else
-														{
-															cout << "Error: Missing Subsubsection header" << endl;
-														}
-														break;
-													case 2:
-														// Make sure there is enough data for the header
-														if (sectionLen >= (readOffset + 32))
-														{
-															subsubsectionLen = ((*(unsigned short *)&(specialEffectSection[readOffset + 30])) + 16);
-															if (sectionLen >= (readOffset + subsubsectionLen))
-															{
-																effectLen += subsubsectionLen;
-															}
-															else
-															{
-																cout << "Error: Invalid subsubsection length" << endl;
-															}
-														}
-														else
-														{
-															cout << "Error: Missing Subsubsection header" << endl;
-														}
-														break;
-													case 3:
-														// To-Do: Parse Type 3 Entry
-														cout << "Error: Effect " << i << " ends with a Type 3 Subsubsection which currently is unable to be parsed" << endl;
-														break;
-													case 4:
-														// Make sure there is enough data for the header
-														if (sectionLen >= (readOffset + 12))
-														{
-															unsigned int numVals = *(unsigned int *)&(specialEffectSection[readOffset + 8]), remainder;
-															subsubsectionLen = (numVals * 2) + 12;
-															// Check if the subsubsection requires padding
-															remainder = subsubsectionLen % 16;
-															if (remainder > 0)
-															{
-																// Add the padding to the length
-																subsubsectionLen += (16 - remainder);
-															}
-															if (sectionLen >= (readOffset + subsubsectionLen))
-															{
-																effectLen += subsubsectionLen;
-															}
-															else
-															{
-																cout << "Error: Invalid subsubsection length" << endl;
-															}
-														}
-														else
-														{
-															cout << "Error: Missing Subsubsection header" << endl;
-														}
-														break;
-													default:
-														cout << "You shouldn't be able to get here" << endl;
-														effectLen = 64;
-													}
-												}
-												else
-												{
-													// There are no subsubsections? Just give the minimum length of the header?
-													effectLen = 64;
-												}
-												if (effectLen > 0)
-												{
-													effect += specialEffectSection.substr(subsectionOffsets[i], effectLen);
-													effects.push_back(effect);
-												}
-											}
-											else
-											{
-												cout << "Error: Subsection ID is incorrect" << endl;
-											}
-										}
-										else
-										{
-											cout << "Error: Invalid subsection offset for subsection " << i << endl;
-										}
-									}
-								}
-							}
-							else
-							{
-								cout << "Error: Section Header isn't complete" << endl;
-							}
-						}
-						else
-						{
-							cout << "Error: Section ID is incorrect" << endl;
-						}
+						effects = getSPFXSpecialEffects(specialEffectSection);
 					}
 					else
 					{
@@ -3392,6 +3015,476 @@ vector<string> getWpnSpecialEffects(string raw)
 	else
 	{
 		cout << "Error: Invalid WPN - Missing number of sections" << endl;
+	}
+	return effects;
+}
+
+vector<Texture> getSPFXTextures(string raw)
+{
+	vector<Texture> textures;
+	unsigned int sectionHeaderLen = 16;
+	if (raw.size() >= sectionHeaderLen && *(unsigned int *)&(raw[0]) == 130)
+	{
+		// Move to number of subsection type 0 entries
+		unsigned int readOffset = ((*(unsigned int *)&(raw[12])) * 32) + 16, sectionLen = raw.size();
+		if (sectionLen >= (readOffset + 4))
+		{
+			vector<unsigned int> subsectionOffsets;
+			unsigned int numSubsections = *(unsigned int *)&(raw[readOffset]);
+			readOffset += 4;
+			subsectionOffsets.reserve(numSubsections);
+			if (sectionLen >= (readOffset + (numSubsections * 4)))
+			{
+				// Store each subsection offset
+				for (unsigned int i = 0; i < numSubsections; i++)
+				{
+					subsectionOffsets.push_back(*(unsigned int *)&(raw[readOffset]));
+					readOffset += 4;
+				}
+				// Parse each subsection
+				for (unsigned int i = 0; i < numSubsections; i++)
+				{
+					// Move to the start of the subsection
+					readOffset = subsectionOffsets[i];
+					// Make sure the offset is valid
+					if (sectionLen >= (readOffset + 4))
+					{
+						if (*(unsigned int *)&(raw[readOffset]) == 150)
+						{
+							vector<vector<unsigned int>> subsubsectionOffsets;
+							subsubsectionOffsets.reserve(5);
+							// Move to the number of type 0 subsubsections
+							readOffset += 4;
+							// For each subsubsection type
+							for (unsigned int j = 0; j < 5; j++)
+							{
+								if (sectionLen >= (readOffset + 4))
+								{
+									unsigned int numSubsubsections = *(unsigned int *)&(raw[readOffset]);
+									readOffset += 4;
+									subsubsectionOffsets.push_back(vector<unsigned int>());
+									subsubsectionOffsets[j].reserve(numSubsubsections);
+									if (sectionLen >= (readOffset + (numSubsubsections * 4)))
+									{
+										for (unsigned int k = 0; k < numSubsubsections; k++)
+										{
+											subsubsectionOffsets[j].push_back(*(unsigned int *)&(raw[readOffset]));
+											readOffset += 4;
+										}
+									}
+									else
+									{
+										cout << "Error: Invalid number of subsubsections in subsection " << i << endl;
+									}
+								}
+								else
+								{
+									cout << "Error: Invalid Subsection " << i << endl;
+								}
+							}
+							for (unsigned int j = 0; j < subsubsectionOffsets[0].size(); j++)
+							{
+								// To-Do: Parse Type 0 Subsubsections
+							}
+							for (unsigned int j = 0; j < subsubsectionOffsets[1].size(); j++)
+							{
+								// Parse Type 1 Subsubsections
+								// Move to the start of the subsubsection
+								readOffset = subsectionOffsets[i] + subsubsectionOffsets[1][j];
+								// Make sure there is enough data for the header
+								if (sectionLen >= (readOffset + 32))
+								{
+									Texture t;
+									unsigned int x, indsLen;
+									unsigned short paletteLen = 0x400;
+									t.width = *(unsigned short *)&(raw[readOffset + 12]);
+									x = 0;
+									while ((t.width >> x) > 1)
+									{
+										x++;
+									}
+									t.wExp = x;
+									t.height = *(unsigned short *)&(raw[readOffset + 14]);
+									x = 0;
+									while ((t.height >> x) > 1)
+									{
+										x++;
+									}
+									t.hExp = x;
+									indsLen = *(unsigned int *)&(raw[readOffset + 27]) & 0xFFFFFF;
+									t.indices.reserve(indsLen);
+									paletteLen = *(unsigned short *)&(raw[readOffset + 29]);
+									t.palette.numColors = paletteLen / 4;
+									t.palette.r.reserve(t.palette.numColors);
+									t.palette.g.reserve(t.palette.numColors);
+									t.palette.b.reserve(t.palette.numColors);
+									t.palette.a.reserve(t.palette.numColors);
+									readOffset += 32;
+									// Make sure the data for the indices exists
+									if (sectionLen >= (readOffset + indsLen))
+									{
+										// Get each index
+										for (unsigned int k = 0; k < indsLen; k++)
+										{
+											unsigned char ind = (unsigned char)raw[readOffset + k], remainder = ind % 32;
+											if (remainder >= 8 && remainder < 16)
+											{
+												ind += 8;
+											}
+											else if (remainder >= 16 && remainder < 24)
+											{
+												ind -= 8;
+											}
+											t.indices.push_back(ind);
+										}
+										readOffset += indsLen;
+										// Make sure the data for the palette exists
+										if (sectionLen >= (readOffset + paletteLen))
+										{
+											for (unsigned int k = 0; k < t.palette.numColors; k++)
+											{
+												unsigned char colorVal = (unsigned char)raw[readOffset + (k * 4)];
+												t.palette.r.push_back(colorVal);
+												colorVal = (unsigned char)raw[readOffset + (k * 4) + 1];
+												t.palette.g.push_back(colorVal);
+												colorVal = (unsigned char)raw[readOffset + (k * 4) + 2];
+												t.palette.b.push_back(colorVal);
+												colorVal = (unsigned char)raw[readOffset + (k * 4) + 3];
+												if (colorVal > 0)
+												{
+													colorVal = (colorVal * 2 - 1);
+												}
+												t.palette.a.push_back(colorVal);
+											}
+											// Add the image to the vector to return
+											textures.push_back(t);
+										}
+										else
+										{
+											cout << "Error: Missing palette colors in subsubsection" << endl;
+										}
+									}
+									else
+									{
+										cout << "Error: Missing image indices in subsubsection" << endl;
+									}
+								}
+								else
+								{
+									cout << "Error: Missing Subsubsection header" << endl;
+								}
+							}
+							for (unsigned int j = 0; j < subsubsectionOffsets[2].size(); j++)
+							{
+								// To-Do: Parse Type 2 Subsubsections
+							}
+							for (unsigned int j = 0; j < subsubsectionOffsets[3].size(); j++)
+							{
+								// To-Do: Parse Type 3 Subsubsections
+							}
+							for (unsigned int j = 0; j < subsubsectionOffsets[4].size(); j++)
+							{
+								// To-Do: Parse Type 4 subsubsections
+							}
+						}
+						else
+						{
+							cout << "Error: Subsection ID is incorrect" << endl;
+						}
+					}
+					else
+					{
+						cout << "Error: Invalid subsection offset for subsection " << i << endl;
+					}
+				}
+			}
+		}
+		else
+		{
+			cout << "Error: Section Header isn't complete" << endl;
+		}
+	}
+	else
+	{
+		cout << "Error: This section is not a special effect section" << endl;
+	}
+	return textures;
+}
+
+vector<string> getSPFXSpecialEffects(string raw)
+{
+	vector<string> effects;
+	unsigned int readOffset = 0, sectionLen = raw.size();
+	// Check the section id
+	if (*(unsigned int *)&(raw[readOffset]) == 130)
+	{
+		unsigned int numEntries = 0;
+		vector<unsigned int> entryOffs;
+		vector<string> entryMetaData;
+		// Move to number of subsection type 0 entries
+		readOffset += 12;
+		// Get the number of entries
+		numEntries = *(unsigned int *)&(raw[readOffset]);
+		readOffset += 4;
+		entryOffs.reserve(numEntries);
+		entryMetaData.reserve(numEntries);
+		// For each entry, read the meta data and add it to the effect string
+		for (unsigned int i = 0; i < numEntries; i++)
+		{
+			entryOffs.push_back(*(unsigned int *)&(raw[readOffset]));
+			readOffset += 4;
+			entryMetaData.push_back(raw.substr(readOffset, 28));
+			readOffset += 28;
+		}
+		if (sectionLen >= (readOffset + 4))
+		{
+			vector<unsigned int> subsectionOffsets;
+			unsigned int numSubsections = *(unsigned int *)&(raw[readOffset]);
+			readOffset += 4;
+			subsectionOffsets.reserve(numSubsections);
+			if (sectionLen >= (readOffset + (numSubsections * 4)))
+			{
+				// Store each subsection offset
+				for (unsigned int i = 0; i < numSubsections; i++)
+				{
+					subsectionOffsets.push_back(*(unsigned int *)&(raw[readOffset]));
+					readOffset += 4;
+				}
+				// Parse each subsection
+				for (unsigned int i = 0; i < numSubsections; i++)
+				{
+					unsigned int finalSubsubsectionType = 5, effectLen = 0, associatedEntries = 0;
+					for (unsigned int j = 0; j < numEntries; j++)
+					{
+						if (entryOffs[j] == subsectionOffsets[i])
+						{
+							associatedEntries++;
+						}
+					}
+					// Add the spe meta data to the start of the effect string
+					string effect = "SPFX";
+					effect.append((char *)&(associatedEntries), sizeof(unsigned int));
+					for (unsigned int j = 0; j < numEntries; j++)
+					{
+						if (entryOffs[j] == subsectionOffsets[i])
+						{
+							effect += entryMetaData[j];
+						}
+					}
+					// Word align the meta data
+					if (effect.size() % 16 > 0)
+					{
+						effect.append(16 - (effect.size() % 16), 0);
+					}
+					// Move to the start of the subsection
+					readOffset = subsectionOffsets[i];
+					// Make sure the offset is valid
+					if (sectionLen >= (readOffset + 4))
+					{
+						if (*(unsigned int *)&(raw[readOffset]) == 150)
+						{
+							vector<vector<unsigned int>> subsubsectionOffsets;
+							subsubsectionOffsets.reserve(5);
+							// Move to the number of type 0 subsubsections
+							readOffset += 4;
+							// For each subsubsection type
+							for (unsigned int j = 0; j < 5; j++)
+							{
+								if (sectionLen >= (readOffset + 4))
+								{
+									unsigned int numSubsubsections = *(unsigned int *)&(raw[readOffset]);
+									readOffset += 4;
+									subsubsectionOffsets.push_back(vector<unsigned int>());
+									subsubsectionOffsets[j].reserve(numSubsubsections);
+									if (sectionLen >= (readOffset + (numSubsubsections * 4)))
+									{
+										for (unsigned int k = 0; k < numSubsubsections; k++)
+										{
+											subsubsectionOffsets[j].push_back(*(unsigned int *)&(raw[readOffset]));
+											readOffset += 4;
+										}
+									}
+									else
+									{
+										cout << "Error: Invalid number of subsubsections in subsection " << i << endl;
+									}
+								}
+								else
+								{
+									cout << "Error: Invalid Subsection " << i << endl;
+								}
+							}
+							for (unsigned int j = 4; j < 5; j--)
+							{
+								if (subsubsectionOffsets[j].size() != 0)
+								{
+									finalSubsubsectionType = j;
+									break;
+								}
+							}
+							if (finalSubsubsectionType < 5)
+							{
+								// Get the offset to the final subsubsection
+								unsigned int subsubsectionLen = 0, finalSubsubsectionOffset = subsubsectionOffsets[finalSubsubsectionType].back();
+								// Set the length equal to the last offset
+								effectLen = finalSubsubsectionOffset;
+								// Move to the start of the subsubsection
+								readOffset = subsectionOffsets[i] + finalSubsubsectionOffset;
+								// Add the length of the final subsubsection by parsing it
+								switch (finalSubsubsectionType)
+								{
+								case 0:
+									// Make sure there is enough data for the header
+									if (sectionLen >= (readOffset + 288))
+									{
+										// Get the offset to the last part of this subsubsection
+										unsigned int lastOffset = *(unsigned int *)&(raw[readOffset + 12]);
+										// Initialize the subsubsection length
+										subsubsectionLen = lastOffset + 272;
+										// Move to the start of the last section
+										readOffset += subsubsectionLen;
+										if (sectionLen >= readOffset + 4)
+										{
+											// Get the number of values in the last section
+											unsigned int numVals = *(unsigned int *)&(raw[readOffset]), remainder;
+											// Add the length of the last part to the subsubsection length
+											subsubsectionLen += ((numVals + 1) * 4);
+											// Determine if the subsubsection needs to be padded
+											remainder = subsubsectionLen % 16;
+											if (remainder > 0)
+											{
+												// Pad the length to word align the subsubsection
+												subsubsectionLen += (16 - remainder);
+											}
+											if (sectionLen >= (readOffset + subsubsectionLen))
+											{
+												effectLen += subsubsectionLen;
+											}
+											else
+											{
+												cout << "Error: Missing values" << endl;
+											}
+										}
+										else
+										{
+											cout << "Error: Missing the number of values" << endl;
+										}
+									}
+									else
+									{
+										cout << "Error: Missing Subsubsection header" << endl;
+									}
+									break;
+								case 1:
+									// Make sure there is enough data for the header
+									if (sectionLen >= (readOffset + 32))
+									{
+										unsigned int indsLen;
+										unsigned short paletteLen = 0x400;
+										indsLen = *(unsigned int *)&(raw[readOffset + 27]) & 0xFFFFFF;
+										readOffset += 32;
+										subsubsectionLen = indsLen + paletteLen + 32;
+										// Make sure the data for the indices exists
+										if (sectionLen >= subsubsectionLen)
+										{
+											effectLen += subsubsectionLen;
+										}
+										else
+										{
+											cout << "Error: Missing image data" << endl;
+										}
+									}
+									else
+									{
+										cout << "Error: Missing Subsubsection header" << endl;
+									}
+									break;
+								case 2:
+									// Make sure there is enough data for the header
+									if (sectionLen >= (readOffset + 32))
+									{
+										subsubsectionLen = ((*(unsigned short *)&(raw[readOffset + 30])) + 16);
+										if (sectionLen >= (readOffset + subsubsectionLen))
+										{
+											effectLen += subsubsectionLen;
+										}
+										else
+										{
+											cout << "Error: Invalid subsubsection length" << endl;
+										}
+									}
+									else
+									{
+										cout << "Error: Missing Subsubsection header" << endl;
+									}
+									break;
+								case 3:
+									// To-Do: Parse Type 3 Entry
+									cout << "Error: Effect " << i << " ends with a Type 3 Subsubsection which currently is unable to be parsed" << endl;
+									break;
+								case 4:
+									// Make sure there is enough data for the header
+									if (sectionLen >= (readOffset + 12))
+									{
+										unsigned int numVals = *(unsigned int *)&(raw[readOffset + 8]), remainder;
+										subsubsectionLen = (numVals * 2) + 12;
+										// Check if the subsubsection requires padding
+										remainder = subsubsectionLen % 16;
+										if (remainder > 0)
+										{
+											// Add the padding to the length
+											subsubsectionLen += (16 - remainder);
+										}
+										if (sectionLen >= (readOffset + subsubsectionLen))
+										{
+											effectLen += subsubsectionLen;
+										}
+										else
+										{
+											cout << "Error: Invalid subsubsection length" << endl;
+										}
+									}
+									else
+									{
+										cout << "Error: Missing Subsubsection header" << endl;
+									}
+									break;
+								default:
+									cout << "You shouldn't be able to get here" << endl;
+									effectLen = 64;
+								}
+							}
+							else
+							{
+								// There are no subsubsections? Just give the minimum length of the header?
+								effectLen = 64;
+							}
+							if (effectLen > 0)
+							{
+								effect += raw.substr(subsectionOffsets[i], effectLen);
+								effects.push_back(effect);
+							}
+						}
+						else
+						{
+							cout << "Error: Subsection ID is incorrect" << endl;
+						}
+					}
+					else
+					{
+						cout << "Error: Invalid subsection offset for subsection " << i << endl;
+					}
+				}
+			}
+		}
+		else
+		{
+			cout << "Error: Section Header isn't complete" << endl;
+		}
+	}
+	else
+	{
+		cout << "Error: Section ID is incorrect" << endl;
 	}
 	return effects;
 }
@@ -3518,9 +3611,13 @@ vector<Texture> getMdlsTextures(string raw)
 									textures[i].palette.b.push_back(colorVal);
 									colorVal = raw[readOffset];
 									readOffset++;
-									if (colorVal > 0)
+									if (colorVal >= 120)
 									{
-										colorVal = 2 * colorVal - 1;
+										colorVal = 255;
+									}
+									else
+									{
+										colorVal = 0;
 									}
 									textures[i].palette.a.push_back(colorVal);
 								}
@@ -3534,11 +3631,140 @@ vector<Texture> getMdlsTextures(string raw)
 	return textures;
 }
 
+vector<Texture> getMsetTextures(string raw, vector<Texture> mdlsTextures)
+{
+	vector<Texture> textures;
+	unsigned int numSections, readOffset = 0, msetLen = raw.size();
+	// Make sure there is data to read
+	if (msetLen >= (readOffset + 4))
+	{
+		// Get the number of sections
+		numSections = *(unsigned int *)&(raw[readOffset]);
+		// Update the read offset
+		readOffset += 4;
+		// Make sure this file has the correct number of sections
+		if (numSections == 3)
+		{
+			// Extract the mmtn offset
+			unsigned int mmtnOffset = *(unsigned int *)&(raw[readOffset]);
+			readOffset = mmtnOffset;
+			// Make sure there is enough data for the MSET header and the MMTN section has the magic value
+			if (msetLen >= (readOffset + mmtnHeaderLen) && raw.substr(readOffset, 4) == "MMTN")
+			{
+				unsigned int mmtnLen = *(unsigned int *)&(raw[readOffset + 4]) + 8;
+				readOffset += mmtnLen;
+				// Make sure there is enough data for the TEXA header and the TEXA section has the magic value
+				if (msetLen >= (readOffset + texaHeaderLen) && raw.substr(readOffset, 4) == "TEXA")
+				{
+					unsigned int texaOffset = readOffset, texaLen = *(unsigned int *)&(raw[readOffset + 4]) + 8;
+					if (msetLen >= (texaOffset + texaLen))
+					{
+						string texa = raw.substr(texaOffset, texaLen);
+						textures = getTexaTextures(texa, mdlsTextures);
+					}
+				}
+			}
+		}
+	}
+	return textures;
+}
+
+vector<Texture> getTexaTextures(string raw, vector<Texture> referenceTextures)
+{
+	vector<Texture> texaTextures;
+	unsigned int texaLen = raw.size(), readOffset = 0;
+	if (raw.size() >= texaHeaderLen)
+	{
+		unsigned int numMdlsTextures = *(unsigned int *)&(raw[readOffset + 8]), numTextureSizes = *(unsigned int *)&(raw[readOffset + 12]), numTextures = *(unsigned int *)&(raw[readOffset + 20]);
+		vector<unsigned char> originImage;
+		vector<unsigned short> widths, heights;
+		vector<unsigned int> textureOffsets;
+		originImage.reserve(numTextures);
+		widths.reserve(numTextures);
+		heights.reserve(numTextures);
+		textureOffsets.reserve(numTextures);
+		readOffset = texaHeaderLen;
+		if (numMdlsTextures == referenceTextures.size())
+		{
+			if (texaLen >= (readOffset + (numTextureSizes * 8) + (numTextures * 4)))
+			{
+				for (unsigned int i = 0; i < numTextureSizes; i++)
+				{
+					originImage.push_back(raw[readOffset + 3]);
+					if (originImage.back() >= referenceTextures.size())
+					{
+						cout << "Error: Invalid Origin Texture Index" << endl;
+					}
+					widths.push_back(*(unsigned short *)&(raw[readOffset + 4]));
+					heights.push_back(*(unsigned short *)&(raw[readOffset + 6]));
+					readOffset += 8;
+				}
+				for (unsigned int i = 0; i < numTextures; i++)
+				{
+					textureOffsets.push_back(*(unsigned int *)&(raw[readOffset]));
+					readOffset += 4;
+				}
+				for (unsigned int i = 0; i < numTextures; i++)
+				{
+					Texture ti;
+					unsigned int textureLen, textureSizeInd;
+					// Calculate the size of the texture
+					if (i < (numTextures - 1))
+					{
+						textureLen = textureOffsets[i + 1] - textureOffsets[i];
+					}
+					else
+					{
+						textureLen = texaLen - textureOffsets[i];
+					}
+					// Determine the texture size index
+					for (textureSizeInd = 0; textureSizeInd < numTextureSizes; textureSizeInd++)
+					{
+						if (textureLen == (widths[textureSizeInd] * heights[textureSizeInd]))
+						{
+							ti.width = widths[textureSizeInd];
+							ti.height = heights[textureSizeInd];
+							if (originImage[textureSizeInd] < referenceTextures.size())
+							{
+								ti.palette = referenceTextures[originImage[textureSizeInd]].palette;
+							}
+							break;
+						}
+					}
+					readOffset = textureOffsets[i];
+					if (texaLen >= (readOffset + textureLen))
+					{
+						for (unsigned int j = 0; j < textureLen; j++)
+						{
+							unsigned char ind = raw[readOffset + j], indMod = ind % 32;
+							if (indMod >= 8 && indMod < 16)
+							{
+								ind += 8;
+							}
+							else if (indMod >= 16 && indMod < 24)
+							{
+								ind -= 8;
+							}
+							ti.indices.push_back(ind);
+						}
+						texaTextures.push_back(ti);
+					}
+				}
+			}
+		}
+		else
+		{
+			cout << "Error: TEXA does not correspond with Reference Textures" << endl;
+		}
+	}
+	return texaTextures;
+}
+
 vector<Texture> getWpnTextures(string raw)
 {
 	vector<Texture> textures;
 	Texture t;
-	unsigned int numTextures, numSections, readOffset = 0, menvOffset, subsectionOffsets[3], subsectionLengths[3];
+	unsigned int numTextures, numSections, readOffset = 0, subsectionOffsets[3], subsectionLengths[3];
 	// Make sure there is data to read
 	if (raw.size() >= (readOffset + 4))
 	{
@@ -3553,14 +3779,13 @@ vector<Texture> getWpnTextures(string raw)
 			if (raw.size() >= (readOffset + 4))
 			{
 				// Get the offset to the MENV section
-				readOffset = *(unsigned int *)&(raw[readOffset]);
-				// Make sure there is data to read
-				if (raw.size() >= (readOffset + menvHeaderLen))
+				unsigned int menvOffset = *(unsigned int *)&(raw[readOffset]);
+				// Make sure there is data to read and that the MENV magic value exists
+				if (raw.size() >= (menvOffset + menvHeaderLen) && raw.substr(menvOffset, 4) == "MENV")
 				{
-					// Store the menv offset
-					menvOffset = readOffset;
+					unsigned int menvLen = *(unsigned int *)&(raw[menvOffset + 4]) + 8;
 					// Move to the first section offset
-					readOffset += 8;
+					readOffset = menvOffset + 8;
 					for (unsigned int i = 0; i < 3; i++)
 					{
 						subsectionOffsets[i] = menvOffset + *(unsigned int *)&(raw[readOffset]);
@@ -3658,12 +3883,31 @@ vector<Texture> getWpnTextures(string raw)
 									textures[i].palette.b.push_back(colorVal);
 									colorVal = raw[readOffset];
 									readOffset++;
-									if (colorVal > 0)
+									if (colorVal >= 120)
 									{
-										colorVal = 2 * colorVal - 1;
+										colorVal = 255;
+									}
+									else
+									{
+										colorVal = 0;
 									}
 									textures[i].palette.a.push_back(colorVal);
 								}
+							}
+						}
+					}
+					// Check the TEXA section
+					unsigned int texaOffset = menvOffset + menvLen;
+					if (raw.size() >= (texaOffset + texaHeaderLen) && raw.substr(texaOffset, 4) == "TEXA")
+					{
+						unsigned int texaLen = *(unsigned int *)&(raw[texaOffset + 4]) + 8;
+						if (raw.size() >= (texaOffset + texaLen))
+						{
+							string texa = raw.substr(texaOffset, texaLen);
+							vector<Texture> texaTextures = getTexaTextures(texa, textures);
+							for (unsigned int i = 0; i < texaTextures.size(); i++)
+							{
+								textures.push_back(texaTextures[i]);
 							}
 						}
 					}
@@ -3726,8 +3970,8 @@ string setMdlsSpecialEffects(string raw, vector<string> effects)
 							{
 								for (unsigned int j = 0; j < numEntriesI; j++)
 								{
-									specialEffectSection.append(4, 0);											// Effect Offset (will update later)
-									specialEffectSection += e.substr((j * 28) + 8, 28);							// Effect Meta Data
+									specialEffectSection.append(4, 0);						// Effect Offset (will update later)
+									specialEffectSection += e.substr((j * 28) + 8, 28);		// Effect Meta Data
 									numEntries++;
 								}
 							}
@@ -3939,8 +4183,8 @@ string setWpnSpecialEffects(string raw, vector<string> effects)
 								{
 									for (unsigned int j = 0; j < numEntriesI; j++)
 									{
-										specialEffectSection.append(4, 0);											// Effect Offset (will update later)
-										specialEffectSection += e.substr((j * 28) + 8, 28);							// Effect Meta Data
+										specialEffectSection.append(4, 0);						// Effect Offset (will update later)
+										specialEffectSection += e.substr((j * 28) + 8, 28);		// Effect Meta Data
 										numEntries++;
 									}
 								}
@@ -4172,6 +4416,10 @@ string setMdlsTextures(string raw, vector<Texture> textures)
 						for (unsigned int i = 0; i < numTextures; i++)
 						{
 							unsigned short paletteLen = textures[i].palette.numColors * 4, height = textures[i].height, hExp = textures[i].hExp, width = textures[i].width, wExp = textures[i].wExp;
+							if (width != 128 || height != 128)
+							{
+								cout << "Warning: MDLS Textures that are not 128x128 pixels are unstable" << endl;
+							}
 							updatedMobj.append((char *)&(paletteLen), sizeof(unsigned short));
 							updatedMobj.append((char *)&(wExp), sizeof(unsigned char));
 							updatedMobj.append((char *)&(hExp), sizeof(unsigned char));
@@ -4185,13 +4433,6 @@ string setMdlsTextures(string raw, vector<Texture> textures)
 						readOffset += 4;
 						// Determine the number of textures in the original mobj
 						numTexturesOriginal = subsectionLengths[2] / 16;
-						// Check if the number of new textures is less than the original number of textures
-						if (numTextures < numTexturesOriginal)
-						{
-							// Display a warning to make sure the user didn't mess up
-							cout << "Warning: The original MDLS contained more textures than were provided!" << endl;
-							cout << "         If this is unexpected, then the output model is invalid." << endl;
-						}
 						// Update the padding offset
 						*(unsigned int *)&(updatedMobj[48]) = updatedMobj.size();
 						// Add padding (because MDLS is special)
@@ -4239,19 +4480,18 @@ string setMdlsTextures(string raw, vector<Texture> textures)
 							updatedSubsectionLen += textures[i].palette.numColors * 4;
 							for (unsigned int j = 0; j < textures[i].palette.numColors; j++)
 							{
-								// Scale the alpha value to the range [0, 128]
 								unsigned char alpha = textures[i].palette.a[j];
-								if (alpha == 255)
+								updatedMobj.append(1, textures[i].palette.r[j]);
+								updatedMobj.append(1, textures[i].palette.g[j]);
+								updatedMobj.append(1, textures[i].palette.b[j]);
+								if (alpha >= 128)
 								{
 									alpha = 128;
 								}
 								else
 								{
-									alpha /= 2;
+									alpha = 0;
 								}
-								updatedMobj.append(1, textures[i].palette.r[j]);
-								updatedMobj.append(1, textures[i].palette.g[j]);
-								updatedMobj.append(1, textures[i].palette.b[j]);
 								updatedMobj.append(1, alpha);
 							}
 						}
@@ -4346,6 +4586,228 @@ string setMdlsTextures(string raw, vector<Texture> textures)
 	return updatedMdls;
 }
 
+string setMsetTextures(string raw, vector<Texture> msetTextures, vector<Texture> mdlsTextures, vector<unsigned int> referenceInds)
+{
+	string mset = "";
+	unsigned int rawLen = raw.size();
+	if (rawLen >= 20)
+	{
+		unsigned int numSections = *(unsigned int *)&(raw[0]);
+		if (numSections == 3)
+		{
+			unsigned int mmtnOff = *(unsigned int *)&(raw[4]), mmtnLen, tableOff = *(unsigned int *)&(raw[8]), unknownOff = *(unsigned int *)&(raw[12]);
+			// Copy the header
+			mset = raw.substr(0, mmtnOff);
+			if (rawLen >= (mmtnOff + mmtnHeaderLen) && raw.substr(mmtnOff, 4) == "MMTN")
+			{
+				mmtnLen = *(unsigned int *)&(raw[mmtnOff + 4]) + 8;
+				unsigned int texaOff = mmtnOff + mmtnLen, texaLen = tableOff - texaOff - 128;
+				// Copy MMTN section
+				mset += raw.substr(mmtnOff, mmtnLen);
+				// Copy TEXA section
+				mset += setTexaTextures(raw.substr(texaOff, texaLen), msetTextures, mdlsTextures, referenceInds);
+				// Add KN5
+				mset += "_KN5";
+				mset.append(124, 0);
+				// Update table offset
+				*(unsigned int *)&(mset[8]) = mset.size();
+				// Copy Table Section
+				mset += raw.substr(tableOff, unknownOff - tableOff);
+				// Update unknown offset
+				*(unsigned int *)&(mset[12]) = mset.size();
+				// Copy Unknown Section
+				mset += raw.substr(unknownOff, raw.size() - unknownOff);
+				// Update fake length field
+				if (mset.size() % 128 == 0)
+				{
+					*(unsigned int *)&(raw[16]) = mset.size();
+				}
+				else
+				{
+					*(unsigned int *)&(raw[16]) = mset.size() + (128 - (mset.size() % 128));
+				}
+			}
+			else
+			{
+				cout << "Error: Invalid MMTN subsection" << endl;
+			}
+		}
+		else
+		{
+			cout << "Error: Invalid number of sections in MSET" << endl;
+		}
+	}
+	else
+	{
+		cout << "Error: Missing MSET Magic Value" << endl;
+	}
+	return mset;
+}
+
+string setTexaTextures(string raw, vector<Texture> texaTextures, vector<Texture> referenceTextures, vector<unsigned int> referenceInds)
+{
+	bool valid;
+	string texa = "", numAsStr;
+	unsigned int texaLen = raw.size(), numTextures = texaTextures.size(), numReferences = referenceTextures.size(), numTextureSizes, readOffset;
+	vector<unsigned short> widths;
+	vector<unsigned short> heights;
+	vector<unsigned int> refInds;
+	vector<unsigned int> textureSizeInds;
+	// Initialize valid by comparing the number of reference inds to the number of textures
+	valid = numTextures == referenceInds.size();
+	// Determine the number of 
+	for (unsigned int i = 0; i < numTextures; i++)
+	{
+		Texture t = texaTextures[i];
+		for (unsigned int j = 0; j <= widths.size(); j++)
+		{
+			if (j < widths.size())
+			{
+				// Check if the texture matches this size
+				if (t.width == widths[j] && t.height == heights[j] && referenceInds[i] == refInds[j])
+				{
+					// Move on to the next texture
+					textureSizeInds.push_back(j);
+					break;
+				}
+			}
+			else
+			{
+				// Add the new size
+				widths.push_back(t.width);
+				heights.push_back(t.height);
+				refInds.push_back(referenceInds[i]);
+				textureSizeInds.push_back(j);
+				break;
+			}
+		}
+	}
+	// Store the number of texture sizes
+	numTextureSizes = widths.size();
+	// Reserve space in the texture size vectors
+	widths.reserve(numTextureSizes);
+	heights.reserve(numTextureSizes);
+	textureSizeInds.reserve(numTextures);
+	// Validate the reference indices
+	for (unsigned int i = 0; valid && i < numTextureSizes; i++)
+	{
+		if (refInds[i] >= numReferences)
+		{
+			valid = false;
+		}
+	}
+	// Check for valid input
+	if (valid)
+	{
+		// Make sure the raw data is a texa valid section
+		if (texaLen >= texaHeaderLen && raw.substr(0, 4) == "TEXA" && texaLen == (*(unsigned int *)&(raw[4]) + 8))
+		{
+			unsigned int rawOffsets[2], subsectionOffsets[2], numRawTS = *(unsigned int *)&(raw[12]), numEntries, numRawTextures;
+			// Magic Value
+			texa = "TEXA";
+			// Initialize size field to 0
+			texa.append(4, 0);
+			texa.append((char *)&(numReferences), sizeof(unsigned int));
+			texa.append((char *)&(numTextureSizes), sizeof(unsigned int));
+			texa += raw.substr(16, 4);
+			texa.append((char *)&(numTextures), sizeof(unsigned int));
+			numRawTextures = *(unsigned int *)&(raw[20]);
+			texa += raw.substr(24, 4);
+			numEntries = *(unsigned int *)&(raw[28]);
+			texa.append((char *)&(numEntries), sizeof(unsigned int));
+			readOffset = 32;
+			for (unsigned int i = 0; i < 2; i++)
+			{
+				rawOffsets[i] = *(unsigned int *)&(raw[readOffset]);
+				subsectionOffsets[i] = rawOffsets[i] + (numTextureSizes - numRawTS) * 8 + (numTextures - numRawTextures) * 4;
+				texa.append((char *)&(subsectionOffsets[i]), sizeof(unsigned int));
+				readOffset += 4;
+			}
+			for (unsigned int i = 0; i < numTextureSizes; i++)
+			{
+				if (i < numRawTS)
+				{
+					texa += raw.substr(readOffset, sizeof(unsigned int));
+				}
+				else
+				{
+					texa.append(4, 0);
+				}
+				texa[readOffset + 3] = (unsigned char)(referenceInds[i]);
+				texa.append((char *)&(widths[i]), sizeof(unsigned short));
+				texa.append((char *)&(heights[i]), sizeof(unsigned short));
+				readOffset += 8;
+			}
+			readOffset = subsectionOffsets[1] + 256;
+			if (readOffset % 128 > 0)
+			{
+				readOffset += (128 - readOffset % 128);
+			}
+			for (unsigned int i = 0; i < numTextures; i++)
+			{
+				texa.append((char *)&(readOffset), sizeof(unsigned int));
+				readOffset += texaTextures[i].indices.size();
+			}
+			readOffset = subsectionOffsets[0];
+			for (unsigned int i = 0; i < numEntries; i++)
+			{
+				unsigned int off = *(unsigned int *)&(raw[readOffset]) + (subsectionOffsets[0] - rawOffsets[0]);
+				texa.append((char *)&(off), sizeof(unsigned int));
+				readOffset += 4;
+			}
+			readOffset = *(unsigned int *)&(raw[rawOffsets[0]]);
+			texa += raw.substr(readOffset, rawOffsets[1] - readOffset + 256);
+			// Padding to align with 128 bytes
+			if (texa.size() % 128 != 0)
+			{
+				texa.append(128 - texa.size() % 128, 0);
+			}
+			for (unsigned int i = 0; i < numTextures; i++)
+			{
+				Texture t = texaTextures[i], tr = referenceTextures[referenceInds[i]];
+				Palette p = t.palette, pr = tr.palette;
+				cout << "Texture " << i << "...";
+				for (unsigned int j = 0; j < t.indices.size(); j++)
+				{
+					unsigned char cj = t.indices[j], minInd = 0, minIndMod;
+					double minDist = numeric_limits<double>::max();
+					for (unsigned int k = 0; k < pr.numColors; k++)
+					{
+						double kDist = pow(p.r[cj] - pr.r[k], 2) + pow(p.g[cj] - pr.g[k], 2) + pow(p.b[cj] - pr.b[k], 2) + pow(p.a[cj] - pr.a[k], 2);
+						if (kDist < minDist)
+						{
+							minDist = kDist;
+							minInd = (unsigned char)k;
+						}
+					}
+					minIndMod = minInd % 32;
+					if (minIndMod >= 8 && minIndMod < 16)
+					{
+						minInd += 8;
+					}
+					else if (minIndMod >= 16 && minIndMod < 24)
+					{
+						minInd -= 8;
+					}
+					texa.append(1, minInd);
+				}
+				cout << "Success" << endl;
+			}
+			// Update TEXA Length
+			*(unsigned int *)&(texa[4]) = texa.size() - 8;
+		}
+		else
+		{
+			cout << "Error: Input is not a TEXA section" << endl;
+		}
+	}
+	else
+	{
+		cout << "Error: Reference Images do not correspond with Reference Indices" << endl;
+	}
+	return texa;
+}
+
 string setWpnTextures(string raw, vector<Texture> textures)
 {
 	string updatedWpn = "";
@@ -4420,6 +4882,10 @@ string setWpnTextures(string raw, vector<Texture> textures)
 						for (unsigned int i = 0; i < numTextures; i++)
 						{
 							unsigned short paletteLen = textures[i].palette.numColors * 4, height = textures[i].height, hExp = textures[i].hExp, width = textures[i].width, wExp = textures[i].wExp;
+							if (width != 128 || height != 128)
+							{
+								cout << "Warning: WPN Textures that are not 128x128 pixels are unstable" << endl;
+							}
 							updatedMenv.append((char *)&(paletteLen), sizeof(unsigned short));
 							updatedMenv.append((char *)&(wExp), sizeof(unsigned char));
 							updatedMenv.append((char *)&(hExp), sizeof(unsigned char));
@@ -4487,19 +4953,18 @@ string setWpnTextures(string raw, vector<Texture> textures)
 							updatedSubsectionLen += textures[i].palette.numColors * 4;
 							for (unsigned int j = 0; j < textures[i].palette.numColors; j++)
 							{
-								// Scale the alpha value to the range [0, 128]
 								unsigned char alpha = textures[i].palette.a[j];
-								if (alpha == 255)
+								updatedMenv.append(1, textures[i].palette.r[j]);
+								updatedMenv.append(1, textures[i].palette.g[j]);
+								updatedMenv.append(1, textures[i].palette.b[j]);
+								if (alpha >= 128)
 								{
 									alpha = 128;
 								}
 								else
 								{
-									alpha /= 2;
+									alpha = 0;
 								}
-								updatedMenv.append(1, textures[i].palette.r[j]);
-								updatedMenv.append(1, textures[i].palette.g[j]);
-								updatedMenv.append(1, textures[i].palette.b[j]);
 								updatedMenv.append(1, alpha);
 							}
 						}
@@ -4599,10 +5064,76 @@ string setWpnTextures(string raw, vector<Texture> textures)
 	return updatedWpn;
 }
 
+vector<Texture> getMagSpecialEffectTextures(string raw)
+{
+	vector<Texture> textures;
+	unsigned int numSections, readOffset = 0, sectionOffset, sectionLen, sectionHeaderLen = 16;
+	string specialEffectSection;
+	// Make sure there is data to read
+	if (raw.size() >= (readOffset + 4))
+	{
+		// Get the number of sections
+		numSections = *(unsigned int *)&(raw[readOffset]);
+		// Make sure this file has the correct number of sections
+		if (numSections == 2)
+		{
+			// Update the read offset
+			readOffset = 8;
+			// Make sure there is data to read
+			if (raw.size() >= 40)
+			{
+				// Get the offset to the Special Effects section
+				sectionOffset = *(unsigned int *)&(raw[readOffset]);
+				// Move to the HUD Image section offset
+				readOffset += 4;
+				// Determine the section length
+				sectionLen = raw.size() - sectionOffset;
+				// Make sure the section isn't empty
+				if (sectionLen > 0)
+				{
+					// Make sure there is data to read and that there is a section header
+					if (raw.size() >= (sectionOffset + sectionLen) && (sectionLen >= sectionHeaderLen))
+					{
+						specialEffectSection = raw.substr(sectionOffset, sectionLen);
+						// Move to the start of the section
+						readOffset = 0;
+						// Check the section id
+						if (*(unsigned int *)&(specialEffectSection[readOffset]) == 130)
+						{
+							textures = getSPFXTextures(specialEffectSection);
+						}
+						else
+						{
+							cout << "Error: Section ID is incorrect" << endl;
+						}
+					}
+					else
+					{
+						cout << "Error: Invalid section length" << endl;
+					}
+				}
+			}
+			else
+			{
+				cout << "Error: Invalid MAG - Missing full header" << endl;
+			}
+		}
+		else
+		{
+			cout << "Error: Invalid MAG - Incorrect number of sections" << endl;
+		}
+	}
+	else
+	{
+		cout << "Error: Invalid MAG - Missing number of sections" << endl;
+	}
+	return textures;
+}
+
 vector<Texture> getMdlsSpecialEffectTextures(string raw)
 {
 	vector<Texture> textures;
-	unsigned int numSections, readOffset = 0, sectionOffset, sectionLen, sectionHeaderLen = 16, numSubsections;
+	unsigned int numSections, readOffset = 0, sectionOffset, sectionLen, sectionHeaderLen = 16;
 	string specialEffectSection;
 	// Make sure there is data to read
 	if (raw.size() >= (readOffset + 4))
@@ -4627,7 +5158,7 @@ vector<Texture> getMdlsSpecialEffectTextures(string raw)
 				if (sectionLen > 0)
 				{
 					// Make sure there is data to read and that there is a section header
-					if (raw.size() >= (sectionOffset + sectionLen) && (sectionLen >= 16))
+					if (raw.size() >= (sectionOffset + sectionLen) && (sectionLen >= sectionHeaderLen))
 					{
 						specialEffectSection = raw.substr(sectionOffset, sectionLen);
 						// Move to the start of the section
@@ -4635,185 +5166,7 @@ vector<Texture> getMdlsSpecialEffectTextures(string raw)
 						// Check the section id
 						if (*(unsigned int *)&(specialEffectSection[readOffset]) == 130)
 						{
-							// Move to number of subsection type 0 entries
-							readOffset += 12;
-							readOffset += ((*(unsigned int *)&(specialEffectSection[readOffset])) * 32) + 4;
-							if (sectionLen >= (readOffset + 4))
-							{
-								vector<unsigned int> subsectionOffsets;
-								numSubsections = *(unsigned int *)&(specialEffectSection[readOffset]);
-								readOffset += 4;
-								subsectionOffsets.reserve(numSubsections);
-								if (sectionLen >= (readOffset + (numSubsections * 4)))
-								{
-									// Store each subsection offset
-									for (unsigned int i = 0; i < numSubsections; i++)
-									{
-										subsectionOffsets.push_back(*(unsigned int *)&(specialEffectSection[readOffset]));
-										readOffset += 4;
-									}
-									// Parse each subsection
-									for (unsigned int i = 0; i < numSubsections; i++)
-									{
-										// Move to the start of the subsection
-										readOffset = subsectionOffsets[i];
-										// Make sure the offset is valid
-										if (sectionLen >= (readOffset + 4))
-										{
-											if (*(unsigned int *)&(specialEffectSection[readOffset]) == 150)
-											{
-												vector<vector<unsigned int>> subsubsectionOffsets;
-												subsubsectionOffsets.reserve(5);
-												// Move to the number of type 0 subsubsections
-												readOffset += 4;
-												// For each subsubsection type
-												for (unsigned int j = 0; j < 5; j++)
-												{
-													if (sectionLen >= (readOffset + 4))
-													{
-														unsigned int numSubsubsections = *(unsigned int *)&(specialEffectSection[readOffset]);
-														readOffset += 4;
-														subsubsectionOffsets.push_back(vector<unsigned int>());
-														subsubsectionOffsets[j].reserve(numSubsubsections);
-														if (sectionLen >= (readOffset + (numSubsubsections * 4)))
-														{
-															for (unsigned int k = 0; k < numSubsubsections; k++)
-															{
-																subsubsectionOffsets[j].push_back(*(unsigned int *)&(specialEffectSection[readOffset]));
-																readOffset += 4;
-															}
-														}
-														else
-														{
-															cout << "Error: Invalid number of subsubsections in subsection " << i << endl;
-														}
-													}
-													else
-													{
-														cout << "Error: Invalid Subsection " << i << endl;
-													}
-												}
-												for (unsigned int j = 0; j < subsubsectionOffsets[0].size(); j++)
-												{
-													// To-Do: Parse Type 0 Subsubsections
-												}
-												for (unsigned int j = 0; j < subsubsectionOffsets[1].size(); j++)
-												{
-													// To-Do: Parse Type 1 Subsubsections
-													// Move to the start of the subsubsection
-													readOffset = subsectionOffsets[i] + subsubsectionOffsets[1][j];
-													// Make sure there is enough data for the header
-													if (sectionLen >= (readOffset + 32))
-													{
-														Texture t;
-														unsigned int x, indsLen;
-														unsigned short paletteLen = 0x400;
-														t.width = *(unsigned short *)&(specialEffectSection[readOffset + 12]);
-														x = 0;
-														while ((t.width >> x) > 1)
-														{
-															x++;
-														}
-														t.wExp = x;
-														t.height = *(unsigned short *)&(specialEffectSection[readOffset + 14]);
-														x = 0;
-														while ((t.height >> x) > 1)
-														{
-															x++;
-														}
-														t.hExp = x;
-														indsLen = *(unsigned int *)&(specialEffectSection[readOffset + 27]) & 0xFFFFFF;
-														t.indices.reserve(indsLen);
-														paletteLen = *(unsigned short *)&(specialEffectSection[readOffset + 29]);
-														t.palette.numColors = paletteLen / 4;
-														t.palette.r.reserve(t.palette.numColors);
-														t.palette.g.reserve(t.palette.numColors);
-														t.palette.b.reserve(t.palette.numColors);
-														t.palette.a.reserve(t.palette.numColors);
-														readOffset += 32;
-														// Make sure the data for the indices exists
-														if (sectionLen >= (readOffset + indsLen))
-														{
-															// Get each index
-															for (unsigned int k = 0; k < indsLen; k++)
-															{
-																unsigned char ind = (unsigned char)specialEffectSection[readOffset + k], remainder = ind % 32;
-																if (remainder >= 8 && remainder < 16)
-																{
-																	ind += 8;
-																}
-																else if (remainder >= 16 && remainder < 24)
-																{
-																	ind -= 8;
-																}
-																t.indices.push_back(ind);
-															}
-															readOffset += indsLen;
-															// Make sure the data for the palette exists
-															if (sectionLen >= (readOffset + paletteLen))
-															{
-																for (unsigned int k = 0; k < t.palette.numColors; k++)
-																{
-																	unsigned char colorVal = (unsigned char)specialEffectSection[readOffset + (k * 4)];
-																	t.palette.r.push_back(colorVal);
-																	colorVal = (unsigned char)specialEffectSection[readOffset + (k * 4) + 1];
-																	t.palette.g.push_back(colorVal);
-																	colorVal = (unsigned char)specialEffectSection[readOffset + (k * 4) + 2];
-																	t.palette.b.push_back(colorVal);
-																	colorVal = (unsigned char)specialEffectSection[readOffset + (k * 4) + 3];
-																	if (colorVal > 0)
-																	{
-																		colorVal = (colorVal * 2 - 1);
-																	}
-																	t.palette.a.push_back(colorVal);
-																}
-																// Add the image to the vector to return
-																textures.push_back(t);
-															}
-															else
-															{
-																cout << "Error: Missing palette colors in subsubsection" << endl;
-															}
-														}
-														else
-														{
-															cout << "Error: Missing image indices in subsubsection" << endl;
-														}
-													}
-													else
-													{
-														cout << "Error: Missing Subsubsection header" << endl;
-													}
-												}
-												for (unsigned int j = 0; j < subsubsectionOffsets[2].size(); j++)
-												{
-													// To-Do: Parse Type 2 Subsubsections
-												}
-												for (unsigned int j = 0; j < subsubsectionOffsets[3].size(); j++)
-												{
-													// To-Do: Parse Type 3 Subsubsections
-												}
-												for (unsigned int j = 0; j < subsubsectionOffsets[4].size(); j++)
-												{
-													// To-Do: Parse Type 4 subsubsections
-												}
-											}
-											else
-											{
-												cout << "Error: Subsection ID is incorrect" << endl;
-											}
-										}
-										else
-										{
-											cout << "Error: Invalid subsection offset for subsection " << i << endl;
-										}
-									}									
-								}
-							}
-							else
-							{
-								cout << "Error: Section Header isn't complete" << endl;
-							}
+							textures = getSPFXTextures(specialEffectSection);
 						}
 						else
 						{
@@ -4846,7 +5199,7 @@ vector<Texture> getMdlsSpecialEffectTextures(string raw)
 vector<Texture> getWpnSpecialEffectTextures(string raw)
 {
 	vector<Texture> textures;
-	unsigned int numSections, readOffset = 0, sectionOffset, sectionLen, sectionHeaderLen = 16, numSubsections;
+	unsigned int numSections, readOffset = 0, sectionOffset, sectionLen, sectionHeaderLen = 16;
 	string specialEffectSection;
 	// Make sure there is data to read
 	if (raw.size() >= (readOffset + 4))
@@ -4859,7 +5212,7 @@ vector<Texture> getWpnSpecialEffectTextures(string raw)
 			// Update the read offset
 			readOffset = 4;
 			// Make sure there is data to read
-			if (raw.size() >= 16)
+			if (raw.size() >= sectionHeaderLen)
 			{
 				// Get the offset to the Special Effects section
 				sectionOffset = *(unsigned int *)&(raw[readOffset]);
@@ -4879,185 +5232,7 @@ vector<Texture> getWpnSpecialEffectTextures(string raw)
 						// Check the section id
 						if (*(unsigned int *)&(specialEffectSection[readOffset]) == 130)
 						{
-							// Move to number of subsection type 0 entries
-							readOffset += 12;
-							readOffset += ((*(unsigned int *)&(specialEffectSection[readOffset])) * 32) + 4;
-							if (sectionLen >= (readOffset + 4))
-							{
-								vector<unsigned int> subsectionOffsets;
-								numSubsections = *(unsigned int *)&(specialEffectSection[readOffset]);
-								readOffset += 4;
-								subsectionOffsets.reserve(numSubsections);
-								if (sectionLen >= (readOffset + (numSubsections * 4)))
-								{
-									// Store each subsection offset
-									for (unsigned int i = 0; i < numSubsections; i++)
-									{
-										subsectionOffsets.push_back(*(unsigned int *)&(specialEffectSection[readOffset]));
-										readOffset += 4;
-									}
-									// Parse each subsection
-									for (unsigned int i = 0; i < numSubsections; i++)
-									{
-										// Move to the start of the subsection
-										readOffset = subsectionOffsets[i];
-										// Make sure the offset is valid
-										if (sectionLen >= (readOffset + 4))
-										{
-											if (*(unsigned int *)&(specialEffectSection[readOffset]) == 150)
-											{
-												vector<vector<unsigned int>> subsubsectionOffsets;
-												subsubsectionOffsets.reserve(5);
-												// Move to the number of type 0 subsubsections
-												readOffset += 4;
-												// For each subsubsection type
-												for (unsigned int j = 0; j < 5; j++)
-												{
-													if (sectionLen >= (readOffset + 4))
-													{
-														unsigned int numSubsubsections = *(unsigned int *)&(specialEffectSection[readOffset]);
-														readOffset += 4;
-														subsubsectionOffsets.push_back(vector<unsigned int>());
-														subsubsectionOffsets[j].reserve(numSubsubsections);
-														if (sectionLen >= (readOffset + (numSubsubsections * 4)))
-														{
-															for (unsigned int k = 0; k < numSubsubsections; k++)
-															{
-																subsubsectionOffsets[j].push_back(*(unsigned int *)&(specialEffectSection[readOffset]));
-																readOffset += 4;
-															}
-														}
-														else
-														{
-															cout << "Error: Invalid number of subsubsections in subsection " << i << endl;
-														}
-													}
-													else
-													{
-														cout << "Error: Invalid Subsection " << i << endl;
-													}
-												}
-												for (unsigned int j = 0; j < subsubsectionOffsets[0].size(); j++)
-												{
-													// To-Do: Parse Type 0 Subsubsections
-												}
-												for (unsigned int j = 0; j < subsubsectionOffsets[1].size(); j++)
-												{
-													// To-Do: Parse Type 1 Subsubsections
-													// Move to the start of the subsubsection
-													readOffset = subsectionOffsets[i] + subsubsectionOffsets[1][j];
-													// Make sure there is enough data for the header
-													if (sectionLen >= (readOffset + 32))
-													{
-														Texture t;
-														unsigned int x, indsLen;
-														unsigned short paletteLen = 0x400;
-														t.width = *(unsigned short *)&(specialEffectSection[readOffset + 12]);
-														x = 0;
-														while ((t.width >> x) > 1)
-														{
-															x++;
-														}
-														t.wExp = x;
-														t.height = *(unsigned short *)&(specialEffectSection[readOffset + 14]);
-														x = 0;
-														while ((t.height >> x) > 1)
-														{
-															x++;
-														}
-														t.hExp = x;
-														indsLen = *(unsigned int *)&(specialEffectSection[readOffset + 27]) & 0xFFFFFF;
-														t.indices.reserve(indsLen);
-														paletteLen = *(unsigned short *)&(specialEffectSection[readOffset + 29]);
-														t.palette.numColors = paletteLen / 4;
-														t.palette.r.reserve(t.palette.numColors);
-														t.palette.g.reserve(t.palette.numColors);
-														t.palette.b.reserve(t.palette.numColors);
-														t.palette.a.reserve(t.palette.numColors);
-														readOffset += 32;
-														// Make sure the data for the indices exists
-														if (sectionLen >= (readOffset + indsLen))
-														{
-															// Get each index
-															for (unsigned int k = 0; k < indsLen; k++)
-															{
-																unsigned char ind = (unsigned char)specialEffectSection[readOffset + k], remainder = ind % 32;
-																if (remainder >= 8 && remainder < 16)
-																{
-																	ind += 8;
-																}
-																else if (remainder >= 16 && remainder < 24)
-																{
-																	ind -= 8;
-																}
-																t.indices.push_back(ind);
-															}
-															readOffset += indsLen;
-															// Make sure the data for the palette exists
-															if (sectionLen >= (readOffset + paletteLen))
-															{
-																for (unsigned int k = 0; k < t.palette.numColors; k++)
-																{
-																	unsigned char colorVal = (unsigned char)specialEffectSection[readOffset + (k * 4)];
-																	t.palette.r.push_back(colorVal);
-																	colorVal = (unsigned char)specialEffectSection[readOffset + (k * 4) + 1];
-																	t.palette.g.push_back(colorVal);
-																	colorVal = (unsigned char)specialEffectSection[readOffset + (k * 4) + 2];
-																	t.palette.b.push_back(colorVal);
-																	colorVal = (unsigned char)specialEffectSection[readOffset + (k * 4) + 3];
-																	if (colorVal > 0)
-																	{
-																		colorVal = (colorVal * 2 - 1);
-																	}
-																	t.palette.a.push_back(colorVal);
-																}
-																// Add the image to the vector to return
-																textures.push_back(t);
-															}
-															else
-															{
-																cout << "Error: Missing palette colors in subsubsection" << endl;
-															}
-														}
-														else
-														{
-															cout << "Error: Missing image indices in subsubsection" << endl;
-														}
-													}
-													else
-													{
-														cout << "Error: Missing Subsubsection header" << endl;
-													}
-												}
-												for (unsigned int j = 0; j < subsubsectionOffsets[2].size(); j++)
-												{
-													// To-Do: Parse Type 2 Subsubsections
-												}
-												for (unsigned int j = 0; j < subsubsectionOffsets[3].size(); j++)
-												{
-													// To-Do: Parse Type 3 Subsubsections
-												}
-												for (unsigned int j = 0; j < subsubsectionOffsets[4].size(); j++)
-												{
-													// To-Do: Parse Type 4 subsubsections
-												}
-											}
-											else
-											{
-												cout << "Error: Subsection ID is incorrect" << endl;
-											}
-										}
-										else
-										{
-											cout << "Error: Invalid subsection offset for subsection " << i << endl;
-										}
-									}
-								}
-							}
-							else
-							{
-								cout << "Error: Section Header isn't complete" << endl;
-							}
+							textures = getSPFXTextures(specialEffectSection);
 						}
 						else
 						{
@@ -5089,7 +5264,7 @@ vector<Texture> getWpnSpecialEffectTextures(string raw)
 
 unsigned int getNumFacesOfTexture(vector<VertexRelative> verts, vector<Face> faces, unsigned int textureInd)
 {
-	unsigned int numVertsOfTexture = 0, numVerts = verts.size(), numFaces = faces.size(), vertexInd;
+	unsigned int numVertsOfTexture = 0, numVerts = verts.size(), numMeshes = faces.size(), numFaces = faces.size(), vertexInd;
 	for (unsigned int i = 0; i < numFaces; i++)
 	{
 		vertexInd = faces[i].vertexIndices[0];
@@ -5114,6 +5289,10 @@ unsigned int getFaceOrientation(Face f, vector<VertexGlobal> verts)
 	ai_real orientationFloat;
 	aiMatrix4x4 mat;
 	VertexGlobal v;
+	mat[3][0] = 0;
+	mat[3][1] = 0;
+	mat[3][2] = 0;
+	mat[3][3] = 1;
 	// Add the face vertices to the matrix
 	for (unsigned int i = 0; i < numVertsPerFace; i++)
 	{
@@ -5125,19 +5304,14 @@ unsigned int getFaceOrientation(Face f, vector<VertexGlobal> verts)
 				v = verts[vInd];
 				mat[i][j] = v.coordinates[j];
 				// Add the view point on the first iteration using the first vertex and its normal
-				if (i == 0)
-				{
-					mat[numVertsPerFace][j] = v.coordinates[j] + v.normal[j];
-				}
+				mat[numVertsPerFace][j] += v.coordinates[j] + v.normal[j];
 			}
 		}
 		mat[i][numDims] = 1;
-		// View point
-		if (i == 0)
-		{
-			mat[numVertsPerFace][numDims] = 1;
-		}
 	}
+	mat[3][0] /= numVertsPerFace;
+	mat[3][1] /= numVertsPerFace;
+	mat[3][2] /= numVertsPerFace;
 	// Get the determinate to quantify the orientation
 	orientationFloat = mat.Determinant();
 	if (orientationFloat > 0)
@@ -5185,16 +5359,20 @@ bool getDaeJoints(const aiScene *scene, vector<JointRelative> &joints, unsigned 
 		{
 			// Use the first bone of mesh 0 to determine the skeleton to use
 			currentNode = scene->mRootNode->FindNode(scene->mMeshes[0]->mBones[0]->mName.data);
+			// Move up the skeleton until you reach the root node - start depth
 			for (nextNode = currentNode; nextNode && nextNode != scene->mRootNode;)
 			{
 				parentNode = currentNode->mParent;
 				nextNode = parentNode;
+				// Check the start depth
 				for (unsigned int i = 0; nextNode && i < (startDepth + 1); i++)
 				{
 					nextNode = nextNode->mParent;
 				}
+				// Make sure next node exists
 				if (nextNode)
 				{
+					// Move to the parent node
 					currentNode = parentNode;
 				}
 			}
@@ -5210,13 +5388,24 @@ bool getDaeJoints(const aiScene *scene, vector<JointRelative> &joints, unsigned 
 			{
 				// Store the node in the joints vector
 				JointRelative tj;
+				unsigned int numericStartIndex;
 				tj.name = currentNode->mName.data;
-				//tj.ind = joints.size();
+				// Find the start index for the numerical portion of the name
+				for (numericStartIndex = 0; numericStartIndex < tj.name.size(); numericStartIndex++)
+				{
+					if (tj.name[numericStartIndex] >= '0' && tj.name[numericStartIndex] <= '9')
+					{
+						break;
+					}
+				}
+				// Convert the numerical portion to an unsigned int and store it as the joint's ind value
 				ss.clear();
-				ss.str(tj.name.substr(4, tj.name.size()));
+				ss.str(tj.name.substr(numericStartIndex, tj.name.size() - numericStartIndex));
 				ss >> tj.ind;
+				// Check if this is the first joint
 				if (joints.size() > 0)
 				{
+					// It isn't so find the parent node in the list of existing joints
 					tj.jointInfo.parentIndex = 0x3FF;
 					for (unsigned int i = 0; i < joints.size(); i++)
 					{
@@ -5232,33 +5421,44 @@ bool getDaeJoints(const aiScene *scene, vector<JointRelative> &joints, unsigned 
 					// This is the root node
 					tj.jointInfo.parentIndex = 0x3FF;
 				}
+				// Initialize unknown values
 				tj.jointInfo.unknownFlag = true;
 				tj.jointInfo.unknownIndex = 0x3FF;
+				// Initialize the child index to none
 				tj.jointInfo.childIndex = 0x3FF;
 				// Decompose the node transformation
 				aiVector3D scale, rotate, translate;
 				mdlsDecompose(currentNode->mTransformation, scale, rotate, translate);
+				// Store the decomposed values
 				for (unsigned int i = 0; i < numDims; i++)
 				{
 					tj.coordinates[i] = translate[i];
 					tj.rotations[i] = rotate[i];
 					tj.scaleFactors[i] = scale[i];
 				}
+				// Initialize another unknown value
 				tj.special = 0;
+				// Store the joint
 				joints.push_back(tj);
 				// Find the next node
 				if (currentNode->mNumChildren > 0)
 				{
+					// This node has a child, so just move on to that
 					currentNode = currentNode->mChildren[0];
 				}
 				else
 				{
+					// Initialize next node to the current node
 					nextNode = currentNode;
+					// Loop until we found a different node to use
 					while (nextNode == currentNode)
 					{
+						// Store the currentNode's parent
 						parentNode = currentNode->mParent;
+						// If the parent node exists
 						if (parentNode)
 						{
+							// Get the next child index
 							unsigned int currentChildInd;
 							for (currentChildInd = 0; currentNode == nextNode && currentChildInd < (parentNode->mNumChildren - 1); currentChildInd++)
 							{
@@ -5267,26 +5467,35 @@ bool getDaeJoints(const aiScene *scene, vector<JointRelative> &joints, unsigned 
 									nextNode = parentNode->mChildren[currentChildInd + 1];
 								}
 							}
+							// Check if there were no more children to use as the next node
 							if (currentNode == nextNode && currentChildInd == (parentNode->mNumChildren - 1))
-							{	
+							{
+								// Set the next node to the parent node
 								nextNode = parentNode;
+								// Make sure that the next node is not the root node
 								if (nextNode != root)
 								{
+									// Set the current node to the parent node to continue the loop
 									currentNode = parentNode;
 								}
 							}
 						}
 						else
 						{
+							// Set the next node to non existent to exit
 							nextNode = parentNode;
 						}
 					}
+					// Set the current node to next node
 					currentNode = nextNode;
 				}
 			} while (currentNode && currentNode != root);
+			// Create a copy of the joints
 			copy = joints;
+			// Sort the joints by the ind value
 			for (unsigned int i = 0; i < joints.size(); i++)
 			{
+				// Make sure the ind is valid
 				if (copy[i].ind < joints.size())
 				{
 					joints[copy[i].ind] = copy[i];
@@ -5299,6 +5508,7 @@ bool getDaeJoints(const aiScene *scene, vector<JointRelative> &joints, unsigned 
 					break;
 				}
 			}
+			// Update the child indices values and child index vectors for each joint
 			for (unsigned int i = 0; i < joints.size(); i++)
 			{
 				JointRelative tj = joints[i];
@@ -5315,19 +5525,21 @@ bool getDaeJoints(const aiScene *scene, vector<JointRelative> &joints, unsigned 
 				}
 			}
 		}
-		//cout << "Number of joints discovered: " << joints.size() << endl;
 	}
 	return valid;
 }
 
-bool getDaeVerticesAndFaces(const aiScene *scene, vector<VertexGlobal> &verts, vector<Face> &faces, vector<JointRelative> joints)
+bool getDaeVerticesAndFaces(const aiScene *scene, vector<vector<VertexGlobal>> &verts, vector<vector<Face>> &faces, vector<JointRelative> joints)
 {
 	bool valid = scene;
-	unsigned int numVerts, numFaces, totalNumVerts = 0, totalNumFaces = 0, previousNumVerts, boneIndex, jointIndex;
+	unsigned int numVerts, numFaces, boneIndex, jointIndex;
 	VertexGlobal tempVert;
 	// Clear the verts and faces vectors
 	verts.clear();
 	faces.clear();
+	// Reserve the space for each mesh
+	verts.reserve(scene->mNumMeshes);
+	faces.reserve(scene->mNumMeshes);
 	// Make sure the assimp scene is valid
 	if (valid)
 	{
@@ -5335,17 +5547,15 @@ bool getDaeVerticesAndFaces(const aiScene *scene, vector<VertexGlobal> &verts, v
 		for (unsigned int i = 0; i < scene->mNumMeshes; i++)
 		{
 			//cout << "Starting Mesh " << i << endl;
+			// Create the vectors for the mesh
+			verts.push_back(vector<VertexGlobal>());
+			faces.push_back(vector<Face>());
 			// Get the number of vertices and faces the mesh has
 			numVerts = scene->mMeshes[i]->mNumVertices;
 			numFaces = scene->mMeshes[i]->mNumFaces;
-			// Store the previous total number of vertices the model had
-			previousNumVerts = totalNumVerts;
-			// Get the potential number of total vertices and faces the model can have
-			totalNumVerts += numVerts;
-			totalNumFaces += numFaces;
 			// Reserve space for the vertices and faces
-			verts.reserve(totalNumVerts);
-			faces.reserve(totalNumFaces);
+			verts[i].reserve(numVerts);
+			faces[i].reserve(numFaces);
 			// For each vertex in the mesh
 			for (unsigned int j = 0; j < numVerts; j++)
 			{
@@ -5461,12 +5671,12 @@ bool getDaeVerticesAndFaces(const aiScene *scene, vector<VertexGlobal> &verts, v
 				}
 				tempVert.textureScaleFactor = 1;
 				// Check if we already have this joint in the vertices vector
-				vector<VertexGlobal>::iterator iter = find(verts.begin(), verts.end(), tempVert);
-				if (iter == verts.end())
+				vector<VertexGlobal>::iterator iter = find(verts[i].begin(), verts[i].end(), tempVert);
+				if (iter == verts[i].end())
 				{
 					// It is a new vertex, so add it to the vector
 					//cout << "Adding Vertex " << verts.size() << endl;
-					verts.push_back(tempVert);
+					verts[i].push_back(tempVert);
 				}
 				else
 				{
@@ -5479,18 +5689,16 @@ bool getDaeVerticesAndFaces(const aiScene *scene, vector<VertexGlobal> &verts, v
 				if (scene->mMeshes[i]->mFaces[j].mNumIndices == numDims)
 				{
 					Face f;
-					f.orientation = COUNTERCLOCKWISE;
 					for (unsigned int k = 0; k < numDims; k++)
 					{
 						// Include the offset (Note: This can get sketchy with our code that removes duplicates, but the update importer settings removes duplicates prior to this point)
-						f.vertexIndices[k] = scene->mMeshes[i]->mFaces[j].mIndices[k] + previousNumVerts;
+						f.vertexIndices[k] = scene->mMeshes[i]->mFaces[j].mIndices[k];
 					}
-					faces.push_back(f);
+					//f.orientation = getFaceOrientation(f, verts[i]);
+					f.orientation = COUNTERCLOCKWISE;
+					faces[i].push_back(f);
 				}
 			}
-			// Update the number of vertices and faces to match the actual amount found
-			totalNumVerts = verts.size();
-			totalNumFaces = faces.size();
 		}
 	}
 	return valid;
@@ -5573,10 +5781,11 @@ vector<JointRelative> getMdlsJoints(string raw, unsigned int maxJoints)
 	return joints;
 }
 
-bool getMdlsVerticesAndFaces(string raw, vector<JointRelative> joints, vector<VertexRelative> &verts, vector<Face> &faces)
+bool getMdlsVerticesAndFaces(string raw, vector<JointRelative> joints, vector<vector<VertexRelative>> &verts, vector<vector<Face>> &faces)
 {
 	// Declare variables
-	unsigned int mobjOff, tableOff, modelSectionLen, numPolygonCollections, *polygonCollectionTextures, *polygonCollectionOffs, polygonCollectionLen, polygonEntryType, polygonLen, numPolygonVerts, originIndex, off, jointIndex, origins[numOrigins] = { 0, 0, 0, 0, 0, 0 };
+	const unsigned int numOrigins = 3;
+	unsigned int mobjOff, tableOff, modelSectionLen, numPolygonCollections, *polygonCollectionTextures, *polygonCollectionOffs, polygonCollectionLen, polygonEntryType, polygonLen, numPolygonVerts, originIndex, off, jointIndex, extraFlag, origins[numOrigins] = { 0, 0, 0 };
 	VertexRelative tempVert;
 	Face tempFace;
 	bool valid = true;
@@ -5592,25 +5801,28 @@ bool getMdlsVerticesAndFaces(string raw, vector<JointRelative> joints, vector<Ve
 		if (raw.size() > mobjOff + mobjHeaderLen)
 		{
 			// Determine the polygon collection table offset
-			tableOff = mobjOff + *(unsigned int *)&(raw[mobjOff + 32]);
+			tableOff = *(unsigned int *)&(raw[mobjOff + 32]);
 			// Determine the length of the 3D Model section
 			modelSectionLen = *(unsigned int *)&(raw[mobjOff + 36]);
 			// Make sure the file contains a polygon collection table
-			if (raw.size() >= tableOff + modelTableHeaderLen)
+			if (raw.size() >= mobjOff + tableOff + modelTableHeaderLen)
 			{
 				// Get the number of polygon collections
-				numPolygonCollections = *(unsigned int *)&(raw[tableOff + 12]);
+				numPolygonCollections = *(unsigned int *)&(raw[mobjOff + tableOff + 12]);
+				// Reserve space for the meshes
+				verts.reserve(numPolygonCollections);
+				faces.reserve(numPolygonCollections);
 				// Initialize the texture and offset arrays
 				polygonCollectionTextures = new unsigned int[numPolygonCollections];
 				polygonCollectionOffs = new unsigned int[numPolygonCollections];
 				// Make sure the polygon collection table is the correct size
-				if (raw.size() >= tableOff + (numPolygonCollections * 16))
+				if (raw.size() >= mobjOff + tableOff + (numPolygonCollections * 16))
 				{
 					// Store the offsets to each polygon collection
 					for (unsigned int i = 0; i < numPolygonCollections; i++)
 					{
-						polygonCollectionTextures[i] = *(unsigned int *)&(raw[tableOff + (i * 16) + 24]);
-						polygonCollectionOffs[i] = tableOff + *(unsigned int *)&(raw[tableOff + (i * 16) + 28]);
+						polygonCollectionTextures[i] = *(unsigned int *)&(raw[mobjOff + tableOff + (i * 16) + 24]);
+						polygonCollectionOffs[i] = mobjOff + tableOff + *(unsigned int *)&(raw[mobjOff + tableOff + (i * 16) + 28]);
 					}
 					// Make sure the file contains each polygon collection
 					if (raw.size() >= polygonCollectionOffs[numPolygonCollections - 1] + 16)
@@ -5618,6 +5830,9 @@ bool getMdlsVerticesAndFaces(string raw, vector<JointRelative> joints, vector<Ve
 						// For each polygon collection
 						for (unsigned int i = 0; i < numPolygonCollections; i++)
 						{
+							vector<unsigned int> originIndTable, extraJointInds;
+							// Create the vector for the meshes
+							verts.push_back(vector<VertexRelative>());
 							// Get the polygon collection length
 							if (i < numPolygonCollections - 1)
 							{
@@ -5625,7 +5840,7 @@ bool getMdlsVerticesAndFaces(string raw, vector<JointRelative> joints, vector<Ve
 							}
 							else
 							{
-								polygonCollectionLen = modelSectionLen - polygonCollectionOffs[i];
+								polygonCollectionLen = modelSectionLen - (polygonCollectionOffs[i] - mobjOff - tableOff);
 							}
 							// Make sure the polygon collection exists (really only necessary on the last one since we did a prior check)
 							if (raw.size() >= polygonCollectionOffs[i] + polygonCollectionLen)
@@ -5644,15 +5859,28 @@ bool getMdlsVerticesAndFaces(string raw, vector<JointRelative> joints, vector<Ve
 										jointIndex = *(unsigned int *)&(raw[j + 4]);
 										// Get the origin index
 										originIndex = *(unsigned int *)&(raw[j + 8]);
-										// Make sure the joint index references a valid joint
-										if (jointIndex < joints.size() && originIndex < numOrigins)
+										// Get the extra flag
+										extraFlag = *(unsigned int *)&(raw[j + 12]);
+										if (extraFlag == 0)
 										{
-											// Update the origin at originJointIndex
-											origins[originIndex] = jointIndex;
+											// Make sure the joint index references a valid joint
+											if (jointIndex < joints.size() && originIndex < numOrigins)
+											{
+												// Update the origin at originJointIndex
+												origins[originIndex] = jointIndex;
+											}
+											else // Invalid origin
+											{
+												valid = false;
+											}
 										}
-										else // Invalid origin
+										else
 										{
-											valid = false;
+											if (extraFlag == 1)
+											{
+												extraJointInds.clear();
+											}
+											extraJointInds.push_back(jointIndex);
 										}
 									}
 									else if (polygonEntryType == 1) // This is a collection of faces
@@ -5703,17 +5931,477 @@ bool getMdlsVerticesAndFaces(string raw, vector<JointRelative> joints, vector<Ve
 														for (unsigned int l = 0; l < 2; l++)
 														{
 															tempVert.textureMap[l] = *(float *)&(raw[j + (k * 48) + (l * 4) + (numWeirds * 16) + 64]);
-															// Invert the v coordinate, because KH has to be special
-															if (l == 1)
-															{
-																tempVert.textureMap[l] = 1 - tempVert.textureMap[l];
-															}
 														}
 														// Check if we already have tempVert in verts
-														if (find(verts.begin(), verts.end(), tempVert) == verts.end())
+														if (find(verts[i].begin(), verts[i].end(), tempVert) == verts[i].end())
 														{
 															// This is a new vertex, add tempVert to verts
-															verts.push_back(tempVert);
+															verts[i].push_back(tempVert);
+														}
+													}
+													else // Invalid origin?
+													{
+														valid = false;
+													}
+												}
+											}
+											else // Failed to parse polygon
+											{
+												valid = false;
+											}
+										}
+										else // The polygon is empty?
+										{
+											valid = false;
+										}
+									}
+									else if (polygonEntryType == 2) // Unknown entry type from Sora's High Poly model, skip for now
+									{
+										// Get the length of the entry
+										polygonLen = *(unsigned int *)&(raw[j + 4]);
+										unsigned int numLines = *(unsigned int *)&(raw[j + 8]);
+										originIndTable.clear();
+										for (unsigned int k = 0; k < numLines; k++)
+										{
+											for (unsigned int l = 0; l < 4; l++)
+											{
+												originIndTable.push_back(*(unsigned int *)&(raw[j + (k * 16) + (l * 4) + 16]));
+											}
+										}
+									}
+									else if (polygonEntryType == 32768) // This is the end of a sub-collection
+									{
+										// Get the length field
+										polygonLen = *(unsigned int *)&(raw[j + 4]);
+										// If the length is 0, then it is the end of the polygon collection
+										if (polygonLen == 0)
+										{
+											break;
+										}
+									}
+									else // Invalid polygon entry type?
+									{
+										polygonLen = 0;
+										valid = false;
+									}
+								}
+							}
+							else // Failed to parse polygon collection header
+							{
+								valid = false;
+							}
+						}
+						// Reset origins
+						for (unsigned int i = 0; i < numDims; i++)
+						{
+							origins[i] = 0;
+						}
+						// Now that we have a list of vertices, revisit each polygon to get the faces
+						for (unsigned int i = 0; i < numPolygonCollections; i++)
+						{
+							vector<unsigned int> originIndTable, extraJointInds;
+							// Create the vector for the mesh
+							faces.push_back(vector<Face>());
+							// Get the polygon collection length
+							if (i < numPolygonCollections - 1)
+							{
+								polygonCollectionLen = polygonCollectionOffs[i + 1] - polygonCollectionOffs[i];
+							}
+							else
+							{
+								polygonCollectionLen = modelSectionLen - (polygonCollectionOffs[i] - mobjOff - tableOff);
+							}
+							// Make sure the polygon collection exists (really only necessary on the last one since we did a prior check)
+							if (raw.size() >= polygonCollectionOffs[i] + polygonCollectionLen)
+							{
+								// For each polygon in the polygon collection
+								for (unsigned int j = polygonCollectionOffs[i] + 16; valid && ((j + 12) < (polygonCollectionOffs[i] + polygonCollectionLen)); j += polygonLen)
+								{
+									// Get the polygon entry type
+									polygonEntryType = *(unsigned int *)&(raw[j]);
+									if (polygonEntryType == 0) // This is an origin update
+									{
+										// Update the polygon length to be the joint reference size
+										polygonLen = 128;
+										// Get the joint index
+										jointIndex = *(unsigned int *)&(raw[j + 4]);
+										// Get the origin index
+										originIndex = *(unsigned int *)&(raw[j + 8]);
+										// Get the extra flag
+										extraFlag = *(unsigned int *)&(raw[j + 12]);
+										if (extraFlag == 0)
+										{
+											// Make sure the joint index references a valid joint
+											if (jointIndex < joints.size() && originIndex < numOrigins)
+											{
+												// Update the origin at originJointIndex
+												origins[originIndex] = jointIndex;
+											}
+											else // Invalid origin
+											{
+												valid = false;
+											}
+										}
+										else
+										{
+											if (extraFlag == 1)
+											{
+												extraJointInds.clear();
+											}
+											extraJointInds.push_back(jointIndex);
+										}
+									}
+									else if (polygonEntryType == 1) // This is a collection of vertices
+									{
+										// Get the length of the polygon
+										polygonLen = *(unsigned int *)&(raw[j + 4]);
+										// Get the number of vertices that make up this polygon
+										numPolygonVerts = *(unsigned int *)&(raw[j + 8]);
+										bool orientation = raw[j + 12];
+										// Make sure the polygon length is not 0
+										if (polygonLen > 0)
+										{
+											// Make sure the polygon is in the data
+											if (raw.size() >= j + polygonLen)
+											{
+												unsigned int numWeirds = 0;
+												// For each vertex in the polygon that is the start of a face
+												for (unsigned int k = 0; (k + numVertsPerFace) <= numPolygonVerts; k++)
+												{
+													// Extract the origin index
+													originIndex = *(unsigned int *)&(raw[j + (k * 48) + (numWeirds * 16) + 44]);
+													// Make sure that the origin index is valid
+													if (originIndex < numOrigins)
+													{
+														// Get the joint index for the vertex
+														tempVert.originJointIndex = origins[originIndex];
+														// Store the vertex's texture index
+														tempVert.textureIndex = polygonCollectionTextures[i];
+														// Extract the coordinate scale factor
+														tempVert.coordinatesScaleFactor = *(float *)&(raw[j + (k * 48) + (numWeirds * 16) + 60]);
+														// Check for padding
+														while (*(unsigned int *)&(raw[j + (k * 48) + (numWeirds * 16) + 76]) != 0)
+														{
+															numWeirds++;
+														}
+														// Extract the texture scale factor
+														tempVert.textureScaleFactor = *(float *)&(raw[j + (k * 48) + (numWeirds * 16) + 72]);
+														// Extract the coordinates for the vertex for each dimension
+														for (unsigned int l = 0; l < numDims; l++)
+														{
+															// Get dimension offset
+															off = (l + 2) % numDims;
+															// Extract the normal values
+															tempVert.normal[l] = *(float *)&(raw[j + (k * 48) + (off * 4) + (numWeirds * 16) + 32]);
+															// Get the vertex's relative coordinate
+															tempVert.coordinates[l] = *(float *)&(raw[j + (k * 48) + (off * 4) + (numWeirds * 16) + 48]);
+														}
+														// Extract the texture u and vr values of the vertex
+														for (unsigned int l = 0; l < 2; l++)
+														{
+															tempVert.textureMap[l] = *(float *)&(raw[j + (k * 48) + (l * 4) + (numWeirds * 16) + 64]);
+														}
+														// Get the index of this vertex in the verts vector
+														unsigned int currentVertInd = (find(verts[i].begin(), verts[i].end(), tempVert) - verts[i].begin()), nextVertInd;
+														// Make sure we got a valid index
+														if (currentVertInd < verts[i].size())
+														{
+															// Save the currentVertInd in the tempFace
+															tempFace.vertexIndices[0] = currentVertInd;
+															unsigned int numWeirds2 = numWeirds;
+															// For each numAsStr that a vertex can have
+															for (unsigned int l = 1; l <= numLinesPerVertex; l++)
+															{
+																// Check if we need to add the lth numAsStr segment
+																if ((k + l) < numPolygonVerts)
+																{
+																	// Get Origin Index for vertex k + l
+																	originIndex = *(unsigned int *)&(raw[j + ((k + l) * 48) + (numWeirds2 * 16) + 44]);
+																	// Make sure the origin index is valid
+																	if (originIndex < numOrigins)
+																	{
+																		// Get the joint index for the vertex
+																		tempVert.originJointIndex = origins[originIndex];
+																		// Store the vertex's texture index
+																		tempVert.textureIndex = polygonCollectionTextures[i];
+																		// Extract the coordinate scale factor
+																		tempVert.coordinatesScaleFactor = *(float *)&(raw[j + ((k + l) * 48) + (numWeirds2 * 16) + 60]);
+																		while (*(unsigned int *)&(raw[j + ((k + l) * 48) + (numWeirds2 * 16) + 76]) != 0)
+																		{
+																			numWeirds2++;
+																		}
+																		// Extract the texture scale factor
+																		tempVert.textureScaleFactor = *(float *)&(raw[j + ((k + l) * 48) + (numWeirds2 * 16) + 72]);
+																		// For each dimension
+																		for (unsigned int m = 0; m < numDims; m++)
+																		{
+																			// Find the offset since it is {Y, Z, X} in the file, but we want {X, Y, Z}
+																			off = ((m + 2) % numDims);
+																			// Extract the normal values
+																			tempVert.normal[m] = *(float *)&(raw[j + ((k + l) * 48) + (off * 4) + (numWeirds2 * 16) + 32]);
+																			// Extract the vertex coordinate
+																			tempVert.coordinates[m] = *(float *)&(raw[j + ((k + l) * 48) + (off * 4) + (numWeirds2 * 16) + 48]);
+																		}
+																		// Extract the texture u and v values of the vertex
+																		for (unsigned int m = 0; m < 2; m++)
+																		{
+																			tempVert.textureMap[m] = *(float *)&(raw[j + ((k + l) * 48) + (m * 4) + (numWeirds2 * 16) + 64]);
+																		}
+																		// Get the index of vertex k + l
+																		nextVertInd = (find(verts[i].begin(), verts[i].end(), tempVert) - verts[i].begin());
+																		// Make sure we got a valid index
+																		if (nextVertInd < verts[i].size())
+																		{
+																			// Save the nextVertInd in the tempFace
+																			tempFace.vertexIndices[l] = nextVertInd;
+																		}
+																		else // Referenced an unknown vertex
+																		{
+																			valid = false;
+																			// Break from the loop
+																			break;
+																		}
+																	}
+																}
+															}
+															// Make sure we got a valid face
+															if (valid)
+															{
+																// Check if we need to flip the order
+																if (orientation)
+																{
+																	unsigned int swap = tempFace.vertexIndices[0];
+																	tempFace.vertexIndices[0] = tempFace.vertexIndices[1];
+																	tempFace.vertexIndices[1] = swap;
+																}
+																tempFace.orientation = CLOCKWISE;
+																// Add the face <k, k + 1, k + 2> to the faces vector
+																faces[i].push_back(tempFace);
+																orientation = !orientation;
+															}
+														}
+														else // Referenced an unknown vertex?
+														{
+															valid = false;
+														}
+													}
+													else // Invalid origin?
+													{
+														valid = false;
+													}
+												}
+											}
+											else // Failed to parse polygon
+											{
+												valid = false;
+											}
+										}
+										else // The polygon is empty?
+										{
+											valid = false;
+										}
+									}
+									else if (polygonEntryType == 2) // Unknown entry type from Sora's High Poly model, skip over for now
+									{
+										// Get the length of the entry
+										polygonLen = *(unsigned int *)&(raw[j + 4]);
+										unsigned int numLines = *(unsigned int *)&(raw[j + 8]);
+										originIndTable.clear();
+										for (unsigned int k = 0; k < numLines; k++)
+										{
+											for (unsigned int l = 0; l < 4; l++)
+											{
+												originIndTable.push_back(*(unsigned int *)&(raw[j + (k * 16) + (l * 4) + 16]));
+											}
+										}
+									}
+									else if (polygonEntryType == 32768) // This is the end of a sub polygon collection
+									{
+										// Get the length field
+										polygonLen = *(unsigned int *)&(raw[j + 4]);
+										// If the length is 0, then it is the end of the polygon collection
+										if (polygonLen == 0)
+										{
+											break;
+										}
+									}
+									else // Invalid polygon entry type?
+									{
+										polygonLen = 0;
+										valid = false;
+									}
+								}
+							}
+							else // Failed to parse polygon collection
+							{
+								valid = false;
+							}
+						}
+					}
+					else // Failed to parse polygon collection header
+					{
+						valid = false;
+					}
+				}
+				else // Failed to parse mobj polygon collection table
+				{
+					valid = false;
+				}
+				// Free the polygon collection textures and offsets
+				delete[]polygonCollectionTextures;
+				delete[]polygonCollectionOffs;
+			}
+			else // The file does not contain the mobj table
+			{
+				valid = false;
+			}
+		}
+		else // The file does not contain the mobj header
+		{
+			valid = false;
+		}
+	}
+	else // The file does not contain the mdls header
+	{
+		valid = false;
+	}
+	return valid;
+}
+
+bool getMdlsShadowVerticesAndFaces(string raw, vector<JointRelative> joints, vector<vector<VertexRelative>> &verts, vector<vector<Face>> &faces)
+{
+	// Declare variables
+	const unsigned int numOrigins = 3;
+	unsigned int mobjOff, tableOff, modelSectionLen, numPolygonCollections, *polygonCollectionOffs, polygonCollectionLen, polygonEntryType, polygonLen, numPolygonVerts, originIndex, off, jointIndex, origins[numOrigins] = { 0, 0, 0 };
+	VertexRelative tempVert;
+	Face tempFace;
+	bool valid = true;
+	// Clear the return values
+	verts.clear();
+	faces.clear();
+	// Make sure the header exists
+	if (raw.size() >= 8)
+	{
+		// Get the mobj offset
+		mobjOff = *(unsigned int *)&(raw[4]);
+		// Make sure the file contains the mobj header
+		if (raw.size() > mobjOff + mobjHeaderLen)
+		{
+			// Determine the polygon collection table offset
+			tableOff = *(unsigned int *)&(raw[mobjOff + 40]);
+			// Determine the length of the 3D Model section
+			modelSectionLen = *(unsigned int *)&(raw[mobjOff + 44]);
+			// Make sure the file contains a polygon collection table
+			if (raw.size() >= mobjOff + tableOff + modelTableHeaderLen)
+			{
+				// Get the number of polygon collections
+				numPolygonCollections = *(unsigned int *)&(raw[mobjOff + tableOff + 12]);
+				// Reserve space for the meshes
+				verts.reserve(numPolygonCollections);
+				faces.reserve(numPolygonCollections);
+				// Initialize the offset array
+				polygonCollectionOffs = new unsigned int[numPolygonCollections];
+				// Make sure the polygon collection table is the correct size
+				if (raw.size() >= mobjOff + tableOff + (numPolygonCollections * 16))
+				{
+					// Store the offsets to each polygon collection
+					for (unsigned int i = 0; i < numPolygonCollections; i++)
+					{
+						polygonCollectionOffs[i] = mobjOff + tableOff + *(unsigned int *)&(raw[mobjOff + tableOff + (i * 16) + 28]);
+					}
+					// Make sure the file contains each polygon collection
+					if (raw.size() >= polygonCollectionOffs[numPolygonCollections - 1] + 16)
+					{
+						// For each polygon collection
+						for (unsigned int i = 0; i < numPolygonCollections; i++)
+						{
+							// Create the vector for the meshes
+							verts.push_back(vector<VertexRelative>());
+							// Get the polygon collection length
+							if (i < numPolygonCollections - 1)
+							{
+								polygonCollectionLen = polygonCollectionOffs[i + 1] - polygonCollectionOffs[i];
+							}
+							else
+							{
+								polygonCollectionLen = modelSectionLen - (polygonCollectionOffs[i] - mobjOff - tableOff);
+							}
+							// Make sure the polygon collection exists (really only necessary on the last one since we did a prior check)
+							if (raw.size() >= polygonCollectionOffs[i] + polygonCollectionLen)
+							{
+								// For each polygon in the polygon collection
+								for (unsigned int j = polygonCollectionOffs[i] + 16; valid && ((j + 12) < (polygonCollectionOffs[i] + polygonCollectionLen)); j += polygonLen)
+								{
+									// Get the entry type
+									polygonEntryType = *(unsigned int *)&(raw[j]);
+									// Check the entry type and perform the appropriate actions
+									if (polygonEntryType == 0) // This is an origin update
+									{
+										// Update the polygon length to be the joint reference size
+										polygonLen = 80;
+										// Get the joint index
+										jointIndex = *(unsigned int *)&(raw[j + 4]);
+										// Get the origin index
+										originIndex = *(unsigned int *)&(raw[j + 8]);
+										// Make sure the joint index references a valid joint
+										if (jointIndex < joints.size() && originIndex < numOrigins)
+										{
+											// Update the origin at originJointIndex
+											origins[originIndex] = jointIndex;
+										}
+										else // Invalid origin
+										{
+											valid = false;
+										}
+									}
+									else if (polygonEntryType == 1) // This is a collection of faces
+									{
+										// Get the length of the polygon
+										polygonLen = *(unsigned int *)&(raw[j + 4]);
+										// Get the number of vertices that make up this polygon
+										numPolygonVerts = *(unsigned int *)&(raw[j + 8]);
+										// Make sure the polygon length is not 0
+										if (polygonLen > 0)
+										{
+											// Make sure the polygon is in the data
+											if (raw.size() >= j + polygonLen)
+											{
+												// For each vertex that makes up the polygon
+												for (unsigned int k = 0; k < numPolygonVerts; k++)
+												{
+													// Extract the origin index
+													originIndex = *(unsigned int *)&(raw[j + (k * 16) + 44]);
+													// Make sure that the origin index is valid
+													if (originIndex < numOrigins)
+													{
+														// Get the joint index for the vertex
+														tempVert.originJointIndex = origins[originIndex];
+														// Store the vertex's texture index
+														tempVert.textureIndex = UINT_MAX;
+														// Extract the coordinate scale factor
+														tempVert.coordinatesScaleFactor = 1;
+														// Extract the texture scale factor
+														tempVert.textureScaleFactor = 1;
+														// Extract the coordinates for the vertex for each dimension
+														for (unsigned int l = 0; l < numDims; l++)
+														{
+															// Get dimension offset
+															off = (l + 2) % numDims;
+															// Extract the normal values
+															tempVert.normal[l] = 1;
+															// Get the vertex's relative coordinate
+															tempVert.coordinates[l] = *(float *)&(raw[j + (k * 16) + (off * 4) + 32]);
+														}
+														// Extract the texture u and v values of the vertex
+														for (unsigned int l = 0; l < 2; l++)
+														{
+															tempVert.textureMap[l] = 0;
+														}
+														// Check if we already have tempVert in verts
+														if (find(verts[i].begin(), verts[i].end(), tempVert) == verts[i].end())
+														{
+															// This is a new vertex, add tempVert to verts
+															verts[i].push_back(tempVert);
 														}
 													}
 													else // Invalid origin?
@@ -5767,6 +6455,8 @@ bool getMdlsVerticesAndFaces(string raw, vector<JointRelative> joints, vector<Ve
 						// Now that we have a list of vertices, revisit each polygon to get the faces
 						for (unsigned int i = 0; i < numPolygonCollections; i++)
 						{
+							// Create the vector for the mesh
+							faces.push_back(vector<Face>());
 							// Get the polygon collection length
 							if (i < numPolygonCollections - 1)
 							{
@@ -5774,7 +6464,7 @@ bool getMdlsVerticesAndFaces(string raw, vector<JointRelative> joints, vector<Ve
 							}
 							else
 							{
-								polygonCollectionLen = modelSectionLen - polygonCollectionOffs[i];
+								polygonCollectionLen = modelSectionLen - (polygonCollectionOffs[i] - mobjOff - tableOff);
 							}
 							// Make sure the polygon collection exists (really only necessary on the last one since we did a prior check)
 							if (raw.size() >= polygonCollectionOffs[i] + polygonCollectionLen)
@@ -5787,7 +6477,7 @@ bool getMdlsVerticesAndFaces(string raw, vector<JointRelative> joints, vector<Ve
 									if (polygonEntryType == 0) // This is an origin update
 									{
 										// Update the polygon length to be the joint reference size
-										polygonLen = 128;
+										polygonLen = 80;
 										// Get the joint index
 										jointIndex = *(unsigned int *)&(raw[j + 4]);
 										// Get the origin index
@@ -5816,55 +6506,44 @@ bool getMdlsVerticesAndFaces(string raw, vector<JointRelative> joints, vector<Ve
 											// Make sure the polygon is in the data
 											if (raw.size() >= j + polygonLen)
 											{
-												unsigned int numWeirds = 0;
 												// For each vertex in the polygon that is the start of a face
 												for (unsigned int k = 0; (k + numVertsPerFace) <= numPolygonVerts; k++)
 												{
 													// Extract the origin index
-													originIndex = *(unsigned int *)&(raw[j + (k * 48) + (numWeirds * 16) + 44]);
+													originIndex = *(unsigned int *)&(raw[j + (k * 16) + 44]);
 													// Make sure that the origin index is valid
 													if (originIndex < numOrigins)
 													{
 														// Get the joint index for the vertex
 														tempVert.originJointIndex = origins[originIndex];
 														// Store the vertex's texture index
-														tempVert.textureIndex = polygonCollectionTextures[i];
+														tempVert.textureIndex = UINT_MAX;
 														// Extract the coordinate scale factor
-														tempVert.coordinatesScaleFactor = *(float *)&(raw[j + (k * 48) + (numWeirds * 16) + 60]);
-														// Check for padding
-														while (*(unsigned int *)&(raw[j + (k * 48) + (numWeirds * 16) + 76]) != 0)
-														{
-															numWeirds++;
-														}
+														tempVert.coordinatesScaleFactor = 1;
 														// Extract the texture scale factor
-														tempVert.textureScaleFactor = *(float *)&(raw[j + (k * 48) + (numWeirds * 16) + 72]);
+														tempVert.textureScaleFactor = 1;
 														// Extract the coordinates for the vertex for each dimension
 														for (unsigned int l = 0; l < numDims; l++)
 														{
 															// Get dimension offset
 															off = (l + 2) % numDims;
-															// To-Do: Extract the normal values
-															tempVert.normal[l] = *(float *)&(raw[j + (k * 48) + (off * 4) + (numWeirds * 16) + 32]);
+															// Extract the normal values
+															tempVert.normal[l] = 1;
 															// Get the vertex's relative coordinate
-															tempVert.coordinates[l] = *(float *)&(raw[j + (k * 48) + (off * 4) + (numWeirds * 16) + 48]);
+															tempVert.coordinates[l] = *(float *)&(raw[j + (k * 16) + (off * 4) + 32]);
 														}
 														// Extract the texture u and vr values of the vertex
 														for (unsigned int l = 0; l < 2; l++)
 														{
-															tempVert.textureMap[l] = *(float *)&(raw[j + (k * 48) + (l * 4) + (numWeirds * 16) + 64]);
-															if (l == 1)
-															{
-																tempVert.textureMap[l] = 1 - tempVert.textureMap[l];
-															}
+															tempVert.textureMap[l] = 0;
 														}
 														// Get the index of this vertex in the verts vector
-														unsigned int currentVertInd = (find(verts.begin(), verts.end(), tempVert) - verts.begin()), nextVertInd;
+														unsigned int currentVertInd = (find(verts[i].begin(), verts[i].end(), tempVert) - verts[i].begin()), nextVertInd;
 														// Make sure we got a valid index
-														if (currentVertInd < verts.size())
+														if (currentVertInd < verts[i].size())
 														{
 															// Save the currentVertInd in the tempFace
 															tempFace.vertexIndices[0] = currentVertInd;
-															unsigned int numWeirds2 = numWeirds;
 															// For each numAsStr that a vertex can have
 															for (unsigned int l = 1; l <= numLinesPerVertex; l++)
 															{
@@ -5872,45 +6551,37 @@ bool getMdlsVerticesAndFaces(string raw, vector<JointRelative> joints, vector<Ve
 																if ((k + l) < numPolygonVerts)
 																{
 																	// Get Origin Index for vertex k + l
-																	originIndex = *(unsigned int *)&(raw[j + ((k + l) * 48) + (numWeirds2 * 16) + 44]);
+																	originIndex = *(unsigned int *)&(raw[j + ((k + l) * 16) + 44]);
 																	// Make sure the origin index is valid
 																	if (originIndex < numOrigins)
 																	{
 																		// Get the joint index for the vertex
 																		tempVert.originJointIndex = origins[originIndex];
 																		// Store the vertex's texture index
-																		tempVert.textureIndex = polygonCollectionTextures[i];
+																		tempVert.textureIndex = UINT_MAX;
 																		// Extract the coordinate scale factor
-																		tempVert.coordinatesScaleFactor = *(float *)&(raw[j + ((k + l) * 48) + (numWeirds2 * 16) + 60]);
-																		while (*(unsigned int *)&(raw[j + ((k + l) * 48) + (numWeirds2 * 16) + 76]) != 0)
-																		{
-																			numWeirds2++;
-																		}
+																		tempVert.coordinatesScaleFactor = 1;
 																		// Extract the texture scale factor
-																		tempVert.textureScaleFactor = *(float *)&(raw[j + ((k + l) * 48) + (numWeirds2 * 16) + 72]);
+																		tempVert.textureScaleFactor = 1;
 																		// For each dimension
 																		for (unsigned int m = 0; m < numDims; m++)
 																		{
 																			// Find the offset since it is {Y, Z, X} in the file, but we want {X, Y, Z}
 																			off = ((m + 2) % numDims);
 																			// Extract the normal values
-																			tempVert.normal[m] = *(float *)&(raw[j + ((k + l) * 48) + (off * 4) + (numWeirds2 * 16) + 32]);
+																			tempVert.normal[m] = 1;
 																			// Extract the vertex coordinate
-																			tempVert.coordinates[m] = *(float *)&(raw[j + ((k + l) * 48) + (off * 4) + (numWeirds2 * 16) + 48]);
+																			tempVert.coordinates[m] = *(float *)&(raw[j + ((k + l) * 16) + (off * 4) + 32]);
 																		}
 																		// Extract the texture u and v values of the vertex
 																		for (unsigned int m = 0; m < 2; m++)
 																		{
-																			tempVert.textureMap[m] = *(float *)&(raw[j + ((k + l) * 48) + (m * 4) + (numWeirds2 * 16) + 64]);
-																			if (m == 1)
-																			{
-																				tempVert.textureMap[m] = 1 - tempVert.textureMap[m];
-																			}
+																			tempVert.textureMap[m] = 0;
 																		}
 																		// Get the index of vertex k + l
-																		nextVertInd = (find(verts.begin(), verts.end(), tempVert) - verts.begin());
+																		nextVertInd = (find(verts[i].begin(), verts[i].end(), tempVert) - verts[i].begin());
 																		// Make sure we got a valid index
-																		if (nextVertInd < verts.size())
+																		if (nextVertInd < verts[i].size())
 																		{
 																			// Save the nextVertInd in the tempFace
 																			tempFace.vertexIndices[l] = nextVertInd;
@@ -5936,7 +6607,7 @@ bool getMdlsVerticesAndFaces(string raw, vector<JointRelative> joints, vector<Ve
 																}
 																tempFace.orientation = CLOCKWISE;
 																// Add the face <k, k + 1, k + 2> to the faces vector
-																faces.push_back(tempFace);
+																faces[i].push_back(tempFace);
 																orientation = !orientation;
 															}
 														}
@@ -5998,8 +6669,7 @@ bool getMdlsVerticesAndFaces(string raw, vector<JointRelative> joints, vector<Ve
 				{
 					valid = false;
 				}
-				// Free the polygon collection textures and offsets
-				delete[]polygonCollectionTextures;
+				// Free the polygon collection offsets
 				delete[]polygonCollectionOffs;
 			}
 			else // The file does not contain the mobj table
@@ -6019,10 +6689,71 @@ bool getMdlsVerticesAndFaces(string raw, vector<JointRelative> joints, vector<Ve
 	return valid;
 }
 
-bool getWpnVerticesAndFaces(string raw, /*vector<JointRelative> joints, */vector<VertexRelative> &verts, vector<Face> &faces)
+vector<JointRelative> getWpnJoints(string raw, unsigned int maxJoints)
+{
+	vector<JointRelative> joints;
+	unsigned int numSections, menvOff, tableOff, numJoints = 0;
+	// Determine the number of joints the wpn has
+	// Make sure the header exists
+	if (raw.size() >= 16)
+	{
+		numSections = *(unsigned int *)&(raw[0]);
+		if (numSections == 2)
+		{
+			// Get the menv offset
+			menvOff = *(unsigned int *)&(raw[8]);
+			// Make sure the file contains the mobj header
+			if (raw.size() > (menvOff + menvHeaderLen))
+			{
+				// Determine the polygon collection table offset
+				tableOff = menvOff + *(unsigned int *)&(raw[menvOff + 32]);
+				if (raw.size() >= (tableOff + 4))
+				{
+					numJoints = *(unsigned int *)&(raw[tableOff]);
+				}
+			}
+		}
+	}
+	// Construct the joints
+	joints.reserve(numJoints);
+	for (unsigned int i = 0; i < numJoints; i++)
+	{
+		JointRelative ji;
+		ji.ind = i;
+		ji.name = "";
+		ji.jointInfo.unknownFlag = 1;
+		if (i > 0)
+		{
+			ji.jointInfo.parentIndex = i - 1;
+			if (joints[i - 1].childrenIndices.size() == 0)
+			{
+				joints[i - 1].jointInfo.childIndex = i;
+			}
+			joints[i - 1].childrenIndices.push_back(i);
+		}
+		else
+		{
+			ji.jointInfo.parentIndex = absoluteMaxJoints;
+		}
+		ji.jointInfo.unknownIndex = absoluteMaxJoints;
+		ji.jointInfo.childIndex = absoluteMaxJoints;
+		for (unsigned int j = 0; j < numDims; j++)
+		{
+			ji.scaleFactors[j] = 1;
+			ji.rotations[j] = 0;
+			ji.coordinates[j] = 0;
+		}
+		ji.special = 0;
+		joints.push_back(ji);
+	}
+	return joints;
+}
+
+bool getWpnVerticesAndFaces(string raw, vector<vector<VertexRelative>> &verts, vector<vector<Face>> &faces)
 {
 	// Declare variables
-	unsigned int numSections, menvOff, tableOff, modelSectionLen, numPolygonCollections, *polygonCollectionTextures, *polygonCollectionOffs, polygonCollectionLen, polygonEntryType, polygonLen, numPolygonVerts, originIndex, off, jointIndex, origins[numOrigins] = { 0, 0, 0, 0, 0, 0 };
+	const unsigned int numOrigins = 3;
+	unsigned int numSections, menvOff, tableOff, modelSectionLen, numPolygonCollections, *polygonCollectionTextures, *polygonCollectionOffs, polygonCollectionLen, polygonEntryType, polygonLen, numPolygonVerts, originIndex, off, jointIndex, origins[numOrigins] = { 0, 0, 0 };
 	VertexRelative tempVert;
 	Face tempFace;
 	bool valid = true;
@@ -6041,25 +6772,28 @@ bool getWpnVerticesAndFaces(string raw, /*vector<JointRelative> joints, */vector
 			if (raw.size() > (menvOff + menvHeaderLen))
 			{
 				// Determine the polygon collection table offset
-				tableOff = menvOff + *(unsigned int *)&(raw[menvOff + 32]);
+				tableOff = *(unsigned int *)&(raw[menvOff + 32]);
 				// Determine the length of the 3D Model section
 				modelSectionLen = *(unsigned int *)&(raw[menvOff + 36]);
 				// Make sure the file contains a polygon collection table
-				if (raw.size() >= tableOff + modelTableHeaderLen)
+				if (raw.size() >= menvOff + tableOff + modelTableHeaderLen)
 				{
 					// Get the number of polygon collections
-					numPolygonCollections = *(unsigned int *)&(raw[tableOff + 12]);
+					numPolygonCollections = *(unsigned int *)&(raw[menvOff + tableOff + 12]);
+					// Reserve space for the meshes
+					verts.reserve(numPolygonCollections);
+					faces.reserve(numPolygonCollections);
 					// Initialize the texture and offset arrays
 					polygonCollectionTextures = new unsigned int[numPolygonCollections];
 					polygonCollectionOffs = new unsigned int[numPolygonCollections];
 					// Make sure the polygon collection table is the correct size
-					if (raw.size() >= (tableOff + ((numPolygonCollections + 1) * 16)))
+					if (raw.size() >= (menvOff + tableOff + ((numPolygonCollections + 1) * 16)))
 					{
 						// Store the offsets to each polygon collection
 						for (unsigned int i = 0; i < numPolygonCollections; i++)
 						{
-							polygonCollectionTextures[i] = *(unsigned int *)&(raw[tableOff + (i * 16) + 24]);
-							polygonCollectionOffs[i] = tableOff + *(unsigned int *)&(raw[tableOff + (i * 16) + 28]);
+							polygonCollectionTextures[i] = *(unsigned int *)&(raw[menvOff + tableOff + (i * 16) + 24]);
+							polygonCollectionOffs[i] = menvOff + tableOff + *(unsigned int *)&(raw[menvOff + tableOff + (i * 16) + 28]);
 						}
 						// Make sure the file contains each polygon collection
 						if (raw.size() >= polygonCollectionOffs[numPolygonCollections - 1] + 16)
@@ -6067,6 +6801,8 @@ bool getWpnVerticesAndFaces(string raw, /*vector<JointRelative> joints, */vector
 							// For each polygon collection
 							for (unsigned int i = 0; i < numPolygonCollections; i++)
 							{
+								// Create the vector for the mesh
+								verts.push_back(vector<VertexRelative>());
 								// Get the polygon collection length
 								if (i < numPolygonCollections - 1)
 								{
@@ -6074,7 +6810,7 @@ bool getWpnVerticesAndFaces(string raw, /*vector<JointRelative> joints, */vector
 								}
 								else
 								{
-									polygonCollectionLen = modelSectionLen - (polygonCollectionOffs[i] - menvOff);
+									polygonCollectionLen = tableOff + modelSectionLen - (polygonCollectionOffs[i] - menvOff);
 								}
 								// Make sure the polygon collection exists (really only necessary on the last one since we did a prior check)
 								if (raw.size() >= polygonCollectionOffs[i] + polygonCollectionLen)
@@ -6093,16 +6829,8 @@ bool getWpnVerticesAndFaces(string raw, /*vector<JointRelative> joints, */vector
 											jointIndex = *(unsigned int *)&(raw[j + 4]);
 											// Get the origin index
 											originIndex = *(unsigned int *)&(raw[j + 8]);
-											// Make sure the joint index references a valid joint
-											//if (jointIndex < joints.size() && originIndex < numOrigins)
-											{
-												// Update the origin at originJointIndex
-												origins[originIndex] = jointIndex;
-											}
-											//else // Invalid origin
-											{
-											//	valid = false;
-											}
+											// Update the origin at originJointIndex
+											origins[originIndex] = jointIndex;
 										}
 										else if (polygonEntryType == 1) // This is a collection of faces
 										{
@@ -6152,17 +6880,12 @@ bool getWpnVerticesAndFaces(string raw, /*vector<JointRelative> joints, */vector
 															for (unsigned int l = 0; l < 2; l++)
 															{
 																tempVert.textureMap[l] = *(float *)&(raw[j + (k * 48) + (l * 4) + (numWeirds * 16) + 64]);
-																// Invert the v coordinate, because KH has to be special
-																if (l == 1)
-																{
-																	tempVert.textureMap[l] = 1 - tempVert.textureMap[l];
-																}
 															}
 															// Check if we already have tempVert in verts
-															if (find(verts.begin(), verts.end(), tempVert) == verts.end())
+															if (find(verts[i].begin(), verts[i].end(), tempVert) == verts[i].end())
 															{
 																// This is a new vertex, add tempVert to verts
-																verts.push_back(tempVert);
+																verts[i].push_back(tempVert);
 															}
 														}
 														else // Invalid origin?
@@ -6216,6 +6939,8 @@ bool getWpnVerticesAndFaces(string raw, /*vector<JointRelative> joints, */vector
 							// Now that we have a list of vertices, revisit each polygon to get the faces
 							for (unsigned int i = 0; i < numPolygonCollections; i++)
 							{
+								// Create the vector for the mesh
+								faces.push_back(vector<Face>());
 								// Get the polygon collection length
 								if (i < numPolygonCollections - 1)
 								{
@@ -6223,7 +6948,7 @@ bool getWpnVerticesAndFaces(string raw, /*vector<JointRelative> joints, */vector
 								}
 								else
 								{
-									polygonCollectionLen = modelSectionLen - (polygonCollectionOffs[i] - menvOff);
+									polygonCollectionLen = tableOff + modelSectionLen - (polygonCollectionOffs[i] - menvOff);
 								}
 								// Make sure the polygon collection exists (really only necessary on the last one since we did a prior check)
 								if (raw.size() >= polygonCollectionOffs[i] + polygonCollectionLen)
@@ -6292,7 +7017,7 @@ bool getWpnVerticesAndFaces(string raw, /*vector<JointRelative> joints, */vector
 															{
 																// Get dimension offset
 																off = (l + 2) % numDims;
-																// To-Do: Extract the normal values
+																// Extract the normal values
 																tempVert.normal[l] = *(float *)&(raw[j + (k * 48) + (off * 4) + (numWeirds * 16) + 32]);
 																// Get the vertex's relative coordinate
 																tempVert.coordinates[l] = *(float *)&(raw[j + (k * 48) + (off * 4) + (numWeirds * 16) + 48]);
@@ -6301,15 +7026,11 @@ bool getWpnVerticesAndFaces(string raw, /*vector<JointRelative> joints, */vector
 															for (unsigned int l = 0; l < 2; l++)
 															{
 																tempVert.textureMap[l] = *(float *)&(raw[j + (k * 48) + (l * 4) + (numWeirds * 16) + 64]);
-																if (l == 1)
-																{
-																	tempVert.textureMap[l] = 1 - tempVert.textureMap[l];
-																}
 															}
 															// Get the index of this vertex in the verts vector
-															unsigned int currentVertInd = (find(verts.begin(), verts.end(), tempVert) - verts.begin()), nextVertInd;
+															unsigned int currentVertInd = (find(verts[i].begin(), verts[i].end(), tempVert) - verts[i].begin()), nextVertInd;
 															// Make sure we got a valid index
-															if (currentVertInd < verts.size())
+															if (currentVertInd < verts[i].size())
 															{
 																// Save the currentVertInd in the tempFace
 																tempFace.vertexIndices[0] = currentVertInd;
@@ -6351,15 +7072,11 @@ bool getWpnVerticesAndFaces(string raw, /*vector<JointRelative> joints, */vector
 																			for (unsigned int m = 0; m < 2; m++)
 																			{
 																				tempVert.textureMap[m] = *(float *)&(raw[j + ((k + l) * 48) + (m * 4) + (numWeirds2 * 16) + 64]);
-																				if (m == 1)
-																				{
-																					tempVert.textureMap[m] = 1 - tempVert.textureMap[m];
-																				}
 																			}
 																			// Get the index of vertex k + l
-																			nextVertInd = (find(verts.begin(), verts.end(), tempVert) - verts.begin());
+																			nextVertInd = (find(verts[i].begin(), verts[i].end(), tempVert) - verts[i].begin());
 																			// Make sure we got a valid index
-																			if (nextVertInd < verts.size())
+																			if (nextVertInd < verts[i].size())
 																			{
 																				// Save the nextVertInd in the tempFace
 																				tempFace.vertexIndices[l] = nextVertInd;
@@ -6385,7 +7102,7 @@ bool getWpnVerticesAndFaces(string raw, /*vector<JointRelative> joints, */vector
 																	}
 																	tempFace.orientation = CLOCKWISE;
 																	// Add the face <k, k + 1, k + 2> to the faces vector
-																	faces.push_back(tempFace);
+																	faces[i].push_back(tempFace);
 																	orientation = !orientation;
 																}
 															}
@@ -6473,52 +7190,90 @@ bool getWpnVerticesAndFaces(string raw, /*vector<JointRelative> joints, */vector
 	return valid;
 }
 
-void removeDuplicateFaces(vector<Face> &faces, bool ignoreOrientation)
+void removeDuplicateFaces(vector<vector<Face>> &faces, bool ignoreOrientation)
 {
 	bool dupe, foundCopy;
-	unsigned int numFaces = faces.size();
-	for (unsigned int i = 0; i < numFaces; i++)
+	unsigned int numMeshes = faces.size(), numFaces;
+	for (unsigned int i = 0; i < numMeshes; i++)
 	{
-		for (unsigned int j = numFaces - 1; j > i; j--)
+		numFaces = faces[i].size();
+		for (unsigned int j = 0; j < numFaces; j++)
 		{
-			// Reset the duplicate flag
-			dupe = true;
-			// Determine if j is a duplicate of i
-			for (unsigned int k = 0; k < numVertsPerFace; k++)
+			for (unsigned int k = numFaces - 1; k > j; k--)
 			{
-				if (ignoreOrientation)
+				// Reset the duplicate flag
+				dupe = true;
+				// Determine if k is a duplicate of j
+				for (unsigned int l = 0; l < numVertsPerFace; l++)
 				{
-					foundCopy = false;
-					for (unsigned int l = 0; l < numVertsPerFace; l++)
+					if (ignoreOrientation)
 					{
-						if (faces[i].vertexIndices[k] == faces[j].vertexIndices[l])
+						foundCopy = false;
+						for (unsigned int m = (l + 1); m < numVertsPerFace; m++)
 						{
-							foundCopy = true;
+							if (faces[i][j].vertexIndices[l] == faces[i][k].vertexIndices[m])
+							{
+								foundCopy = true;
+								break;
+							}
+						}
+						if (!foundCopy)
+						{
+							dupe = false;
 							break;
 						}
 					}
-					if (!foundCopy)
+					else
 					{
-						dupe = false;
-						break;
+						if (faces[i][j].vertexIndices[l] != faces[i][k].vertexIndices[l])
+						{
+							dupe = false;
+							break;
+						}
 					}
 				}
-				else
+				// Check if face k is a duplicate of j
+				if (dupe)
 				{
-					if (faces[i].vertexIndices[k] != faces[j].vertexIndices[k])
-					{
-						dupe = false;
-						break;
-					}
+					// Remove face k
+					faces.erase(faces.begin() + k);
+					// Update the number of faces
+					numFaces--;
 				}
 			}
-			// Check if face j is a duplicate of i
-			if (dupe)
+		}
+	}
+	return;
+}
+
+void removeDuplicateVertices(vector<vector<VertexGlobal>> &verts, vector<vector<Face>> &faces)
+{
+	unsigned int numMeshes = faces.size(), numFaces, numVerts;
+	for (unsigned int i = 0; i < numMeshes; i++)
+	{
+		numFaces = faces[i].size();
+		numVerts = verts[i].size();
+		for (unsigned int j = 0; j < numVerts; j++)
+		{
+			for (unsigned int k = numVerts - 1; k > j; k--)
 			{
-				// Remove face j
-				faces.erase(faces.begin() + j);
-				// Update the number of faces
-				numFaces--;
+				// Determine if k is a duplicate of j
+				if (verts[i][j] == verts[i][k])
+				{
+					// Check all of the faces to see if a face contains vertex k
+					for (unsigned int l = 0; l < numFaces; l++)
+					{
+						for (unsigned int m = 0; m < numVertsPerFace; m++)
+						{
+							if (faces[i][l].vertexIndices[m] == k)
+							{
+								faces[i][l].vertexIndices[m] = j;
+							}
+						}
+						verts.erase(verts.begin() + k);
+						numVerts--;
+					}
+				}
 			}
 		}
 	}
@@ -6581,7 +7336,7 @@ bool getJointGlobal(vector<JointRelative> joints, unsigned int jrInd, JointGloba
 				// Peform the translation
 				transform = translate * transform;
 				// Get the this joint's parent
-				recursiveInd = jr.jointInfo.parentIndex;
+				recursiveInd = parent.jointInfo.parentIndex;
 			}
 			// Check if we exited the loop normally
 			if (recursiveInd == absoluteMaxJoints)
@@ -6700,16 +7455,22 @@ bool getVertexGlobal(vector<JointRelative> joints, VertexRelative vr, VertexGlob
 	return valid;
 }
 
-bool getVerticesGlobal(vector<JointRelative> joints, vector<VertexRelative> vr, vector<VertexGlobal> &vg)
+bool getVerticesGlobal(vector<JointRelative> joints, vector<vector<VertexRelative>> vr, vector<vector<VertexGlobal>> &vg)
 {
 	bool valid = true;
-	unsigned int numVerts = vr.size();;
+	unsigned int numMeshes = vr.size(), numVerts;
 	// Copy the relative vertices into vg
-	vg = *(vector<VertexGlobal> *)&(vr);
-	// Update the coordinates
-	for (unsigned int i = 0; valid && i < numVerts; i++)
+	vg = *(vector<vector<VertexGlobal>> *)&(vr);
+	// Update the coordinates for each vertex in each mesh
+	for (unsigned int i = 0; valid && i < numMeshes; i++)
 	{
-		valid = getVertexGlobal(joints, vr[i], vg[i]);
+		// Get the number of vertices in mesh i
+		numVerts = vr[i].size();
+		for (unsigned int j = 0; j < numVerts; j++)
+		{
+			// Update the coordinates
+			valid = getVertexGlobal(joints, vr[i][j], vg[i][j]);
+		}
 	}
 	return valid;
 }
@@ -6783,15 +7544,18 @@ bool getVertexRelative(vector<JointRelative> joints, VertexGlobal vg, VertexRela
 	return valid;
 }
 
-bool getVerticesRelative(vector<JointRelative> joints, vector<VertexGlobal> vg, vector<VertexRelative> &vr)
+bool getVerticesRelative(vector<JointRelative> joints, vector<vector<VertexGlobal>> vg, vector<vector<VertexRelative>> &vr)
 {
 	bool valid = true;
 	// Copy the global vertices into vr
-	vr = *(vector<VertexRelative> *)&(vg);
+	vr = *(vector<vector<VertexRelative>> *)&(vg);
 	// Update the coordinates
 	for (unsigned int i = 0; valid && i < vr.size(); i++)
 	{
-		valid = getVertexRelative(joints, vg[i], vr[i]);
+		for (unsigned int j = 0; valid && j < vr[i].size(); j++)
+		{
+			valid = getVertexRelative(joints, vg[i][j], vr[i][j]);
+		}
 	}
 	return valid;
 }
@@ -6820,20 +7584,34 @@ bool getFace(FaceEx fe, vector<VertexRelative> verts, Face &f)
 	return valid;
 }
 
-bool getFaces(vector<FaceEx> facesEx, vector<VertexRelative> verts, vector<Face> &faces)
+bool getFaces(vector<vector<FaceEx>> facesEx, vector<vector<VertexRelative>> verts, vector<vector<Face>> &faces)
 {
 	bool valid = true;
-	unsigned int numFaces = facesEx.size();
+	unsigned int numMeshes = facesEx.size(), numFaces;
 	// Clear the return vector
 	faces.clear();
-	// Allocate space for the faces
-	faces.reserve(numFaces);
-	// Get each face
-	for (unsigned int i = 0; valid && (i < numFaces); i++)
+	// Make sure the number of meshes matches between the verts and faces
+	if (numMeshes == verts.size())
 	{
-		Face f;
-		valid = getFace(facesEx[i], verts, f);
-		faces.push_back(f);
+		// Allocate space for the faces
+		faces.reserve(numMeshes);
+		// Get each face
+		for (unsigned int i = 0; valid && (i < numMeshes); i++)
+		{
+			numFaces = facesEx[i].size();
+			faces.push_back(vector<Face>());
+			faces[i].reserve(numFaces);
+			for (unsigned int j = 0; valid && (j < numFaces); j++)
+			{
+				Face f;
+				valid = getFace(facesEx[i][j], verts[i], f);
+				faces[i].push_back(f);
+			}
+		}
+	}
+	else
+	{
+		valid = false;
 	}
 	return valid;
 }
@@ -6857,17 +7635,189 @@ bool getFaceEx(Face f, vector<VertexRelative> verts, FaceEx &fe)
 	return valid;
 }
 
-bool getFacesEx(vector<Face> faces, vector<VertexRelative> verts, vector<FaceEx> &facesEx)
+bool getFacesEx(vector<vector<Face>> faces, vector<vector<VertexRelative>> verts, vector<vector<FaceEx>> &facesEx)
 {
 	bool valid = true;
-	unsigned int numFaces = faces.size();
+	unsigned int numMeshes = faces.size(), numFaces;
 	facesEx.clear();
-	facesEx.reserve(numFaces);
-	for (unsigned int i = 0; valid && (i < numFaces); i++)
+	// Make sure the number of meshes matches between the verts and faces
+	if (numMeshes == verts.size())
 	{
-		FaceEx fe;
-		valid = getFaceEx(faces[i], verts, fe);
-		facesEx.push_back(fe);
+		facesEx.reserve(numMeshes);
+		for (unsigned int i = 0; valid && (i < numMeshes); i++)
+		{
+			numFaces = faces[i].size();
+			facesEx.push_back(vector<FaceEx>());
+			facesEx[i].reserve(numFaces);
+			for (unsigned int j = 0; valid && (j < numFaces); j++)
+			{
+				FaceEx fe;
+				valid = getFaceEx(faces[i][j], verts[i], fe);
+				facesEx[i].push_back(fe);
+			}
+		}
+	}
+	else
+	{
+		valid = false;
+	}
+	return valid;
+}
+
+bool combineMeshes(vector<vector<VertexRelative>> &verts, vector<vector<Face>> &faces)
+{
+	bool valid = true;
+	vector<vector<VertexRelative>> combinedVerts;
+	vector<VertexRelative> combinedVert;
+	vector<vector<Face>> combinedMeshes;
+	vector<Face> combinedMesh;
+	unsigned int numMeshes = faces.size(), numFaces, totalNumFaces = 0, numVerts, totalNumVerts = 0;
+	// Make sure the number of meshes matches between the two vectors
+	if (numMeshes == verts.size())
+	{
+		// Reserve space in the combined vectors
+		combinedVerts.reserve(1);
+		combinedMeshes.reserve(1);
+		// For each mesh
+		for (unsigned int i = 0; i < numMeshes; i++)
+		{
+			// Get the number of vertices in the mesh
+			numVerts = verts[i].size();
+			// Update the total number of verts
+			totalNumVerts += numVerts;
+			// Get the number of faces in the mesh
+			numFaces = faces[i].size();
+			// Update the total number of faces
+			totalNumFaces += numFaces;
+			// Reserve space in the combined vectors
+			combinedVert.reserve(totalNumVerts);
+			combinedMesh.reserve(totalNumFaces);
+			// Push each vertex into the combined vertices vector
+			for (unsigned int j = 0; j < numVerts; j++)
+			{
+				combinedVert.push_back(verts[i][j]);
+			}
+			// Push each face into the combined mesh vector
+			for (unsigned int j = 0; j < numFaces; j++)
+			{
+				combinedMesh.push_back(faces[i][j]);
+				// Update the vertex indices
+				for (unsigned int k = 0; k < numDims; k++)
+				{
+					combinedMesh.back().vertexIndices[k] += (totalNumVerts - numVerts);
+				}
+			}
+		}
+		// Store the combined mesh vectors
+		combinedVerts.push_back(combinedVert);
+		combinedMeshes.push_back(combinedMesh);
+		// Overwrite the outputs
+		verts = combinedVerts;
+		faces = combinedMeshes;
+	}
+	else
+	{
+		// The number of meshes needs to be consistent
+		valid = false;
+	}
+	return valid;
+}
+
+// This function doesn't care about coordinates
+bool combineMeshes(vector<vector<VertexGlobal>> &verts, vector<vector<Face>> &faces)
+{
+	return combineMeshes(*(vector<vector<VertexRelative>> *)&(verts), faces);
+}
+
+bool swapChirality(vector<JointRelative> &joints, vector<vector<VertexGlobal>> &verts)
+{
+	bool valid = true;
+	unsigned int numJoints = joints.size(), numMeshes = verts.size(), numVerts;
+	if (numJoints > 0)
+	{
+		float tempCoord = joints[0].coordinates[1];
+		// Set the rotation amount to -pi/2
+		float theta = (float)-M_PI_2;
+		// Get the rotation matrix for around the x axis and initalize the pose
+		aiMatrix4x4 combinedRotMat, chiralRotMat, jointRotMatX, jointRotMatY, jointRotMatZ;
+		aiVector3D pose, scale, rotate, translate;
+		// Construct the new rotation matrices
+		aiMatrix4x4::RotationX(theta, chiralRotMat);
+		aiMatrix4x4::RotationX(joints[0].rotations[0], jointRotMatX);
+		aiMatrix4x4::RotationY(joints[0].rotations[1], jointRotMatY);
+		aiMatrix4x4::RotationZ(joints[0].rotations[2], jointRotMatZ);
+		// Combine the rotations
+		combinedRotMat = chiralRotMat * jointRotMatX * jointRotMatZ * jointRotMatY;
+		// Decompose the combined rotation matrix
+		mdlsDecompose(combinedRotMat, scale, rotate, translate);
+		// Modify the root joint to swap its chirality
+		joints[0].coordinates[1] = joints[0].coordinates[2];
+		joints[0].coordinates[2] = tempCoord;
+		for (unsigned int i = 0; i < numDims; i++)
+		{
+			joints[0].rotations[i] = rotate[i];
+		}
+		// Rotate the global vertices to match the rotated joints
+		for (unsigned int i = 0; i < numMeshes; i++)
+		{
+			// Get the number of vertices in the mesh
+			numVerts = verts[i].size();
+			for (unsigned int j = 0; j < numVerts; j++)
+			{
+				// Get the vertex's coordiantes
+				for (unsigned int k = 0; k < numDims; k++)
+				{
+					pose[k] = verts[i][j].coordinates[k];
+				}
+				// Rotate them
+				pose = chiralRotMat * pose;
+				// Store the rotated coordinates
+				for (unsigned int k = 0; k < numDims; k++)
+				{
+					verts[i][j].coordinates[k] = pose[k];
+				}
+			}
+		}
+	}
+	else
+	{
+		valid = false;
+	}
+	return valid;
+}
+
+bool swapChirality(vector<JointRelative> &joints, vector<vector<VertexRelative>> &verts)
+{
+	bool valid = true;
+	unsigned int numJoints = joints.size(), numMeshes = verts.size();
+	if (numJoints > 0)
+	{
+		float tempCoord = joints[0].coordinates[1];
+		// Set the rotation amount to -pi/2
+		float theta = (float)-M_PI_2;
+		// Get the rotation matrix for around the x axis and initalize the pose
+		aiMatrix4x4 combinedRotMat, chiralRotMat, jointRotMatX, jointRotMatY, jointRotMatZ;
+		aiVector3D scale, rotate, translate;
+		// Construct the new rotation matrices
+		aiMatrix4x4::RotationX(theta, chiralRotMat);
+		aiMatrix4x4::RotationX(joints[0].rotations[0], jointRotMatX);
+		aiMatrix4x4::RotationY(joints[0].rotations[1], jointRotMatY);
+		aiMatrix4x4::RotationZ(joints[0].rotations[2], jointRotMatZ);
+		// Combine the rotations
+		combinedRotMat = chiralRotMat * jointRotMatX * jointRotMatZ * jointRotMatY;
+		// Decompose the combined rotation matrix
+		mdlsDecompose(combinedRotMat, scale, rotate, translate);
+		// Modify the root joint to swap its chirality
+		joints[0].coordinates[1] = joints[0].coordinates[2];
+		joints[0].coordinates[2] = tempCoord;
+		for (unsigned int i = 0; i < numDims; i++)
+		{
+			joints[0].rotations[i] = rotate[i];
+		}
+	}
+	else
+	{
+		valid = false;
 	}
 	return valid;
 }
@@ -6915,328 +7865,981 @@ bool getInverseBindMatrix(vector<JointRelative> joints, unsigned int jointIndex,
 	return valid;
 }
 
-bool getPolygonCollections(vector<VertexRelative> verts, vector<Face> faces, vector<vector<vector<vector<unsigned int>>>> &polygonCollections)
+bool getPolygonCollections(vector<vector<VertexRelative>> verts, vector<vector<Face>> faces, vector<PolygonCollection> &polygonCollections)
 {
-	bool valid = true, canConnectTL, canConnectPSC = true, foundVertex, vertStatus[numDims], swap = false;
-	const unsigned int lengthThreshold = 4096;
-	unsigned int numTextures = getNumTextures(verts), currentTextureIndex = numTextures, vertIndex, subCollectionLen, triangleListLen;
-	vector<vector<vector<unsigned int>>> polygonCollection;
-	vector<vector<unsigned int>> polygonSubCollection;
-	vector<unsigned int> triangleList;
+	bool valid = true, canConnectTL = true, canConnectTLR = true, canConnectPSC = true, foundVertex, foundVertexR, vertStatus[numDims], vertStatusR[numDims], swap;
+	const unsigned int lengthThreshold = 4032, numOrigins = 3;
+	unsigned int numTextures = getNumTextures(verts), currentTextureIndex = numTextures, subCollectionLen, triangleListLen, triangleListRLen, faceLen, originLen, numFilledOrigins, origins[numOrigins];
+	PolygonCollection polygonCollection;
+	PolygonSubCollection polygonSubCollection;
+	TriangleList triangleList, triangleListR;
 	// Clear the return value
 	polygonCollections.clear();
-	// Parse the faces to separate into polygon collections based on texture index
+	// Set the orientation for the triangle lists
+	triangleList.orientation = COUNTERCLOCKWISE;
+	triangleListR.orientation = CLOCKWISE;
+	// For each mesh
 	for (unsigned int i = 0; i < faces.size(); i++)
 	{
-		// Get Face i
-		Face f = faces[i], fp;
-		// Reset the can connect flag
-		canConnectTL = true;
-		// Get the index of the first vertex of the face
-		vertIndex = f.vertexIndices[0];
-		// Make sure the vertex is valid
-		if (vertIndex < verts.size())
+		// Get the number of verts in mesh i
+		unsigned int numVerts = verts[i].size();
+		// Reset the sub-collection length and the origins
+		subCollectionLen = 0;
+		originLen = 0;
+		numFilledOrigins = 0;
+		swap = false;
+		for (unsigned int j = 0; j < numOrigins; j++)
 		{
-			// Check if we are still using the same polygon collection
-			if ((verts[vertIndex].textureIndex != currentTextureIndex))
-			{
-				if (triangleList.size() > 0)
-				{
-					// Add the finished triangle list to the polygon sub-collection
-					polygonSubCollection.push_back(triangleList);
-					// Clear the triangle list to be used for the new polygon sub-collection
-					triangleList.clear();
-				}
-				if (polygonSubCollection.size() > 0)
-				{
-					// Add the finished polygon sub-collection the the polygon collection
-					polygonCollection.push_back(polygonSubCollection);
-					// Clear the polygon sub-collection for the new polygon list
-					polygonSubCollection.clear();
-					canConnectPSC = true;
-				}
-				if (polygonCollection.size() > 0)
-				{
-					// Add the finished polygon collection to the output vector
-					polygonCollections.push_back(polygonCollection);
-					// Clear the polygon collection to be used for the new polygon collection
-					polygonCollection.clear();
-				}
-				// Update the current texture index
-				currentTextureIndex = verts[vertIndex].textureIndex;
-			}
+			origins[j] = 0;
 		}
-		// If this isn't the first face, check if we can connect it to the existing triangle list
-		if (triangleList.size() >= 3)
+		// For each face in the mesh
+		for (unsigned int j = 0; j < faces[i].size(); j++)
 		{
-			// Get the previous face
-			fp = faces[i - 1];
-			unsigned int ind;
-			// Check which face should be converted to clockwise for the comparison
-			if (swap)
+			// Get Face i, j
+			Face f = faces[i][j], fr = f, fp, fpr;
+			// Check which faces need to have their orientation flipped
+			if (swap && f.orientation == COUNTERCLOCKWISE || !swap && f.orientation == CLOCKWISE)
 			{
-				ind = f.vertexIndices[0];
+				unsigned int ind = f.vertexIndices[0];
 				f.vertexIndices[0] = f.vertexIndices[1];
 				f.vertexIndices[1] = ind;
 			}
-			else
+			if (swap && fr.orientation == CLOCKWISE || !swap && fr.orientation == COUNTERCLOCKWISE)
 			{
-				ind = fp.vertexIndices[0];
-				fp.vertexIndices[0] = fp.vertexIndices[1];
-				fp.vertexIndices[1] = ind;
+				unsigned int ind = fr.vertexIndices[0];
+				fr.vertexIndices[0] = fr.vertexIndices[1];
+				fr.vertexIndices[1] = ind;
 			}
-			// For each vertex in the face...
-			for (unsigned int j = 0; j < numVertsPerFace; j++)
+			// Reset the can connect flag
+			if (!canConnectTL && !canConnectTLR)
 			{
-				// Get the index of vertex j
-				vertIndex = f.vertexIndices[j];
-				// Make sure the vertex is valid
-				if (vertIndex < verts.size())
+				canConnectTL = true;
+				canConnectTLR = true;
+			}
+			// Make sure the vertex is valid
+			if (f.vertexIndices[0] < numVerts && f.vertexIndices[1] < numVerts && f.vertexIndices[2] < numVerts)
+			{
+				// Get the index of the first vertex of the face
+				unsigned int vertIndex = f.vertexIndices[0];
+				// Check if we need to separate this mesh because it uses multiple textures
+				if ((verts[i][vertIndex].textureIndex != currentTextureIndex))
 				{
-					// Reset the found vertex flag
-					foundVertex = false;
-					// For each vertex that makes up the previous face...
-					for (unsigned int k = 0; !foundVertex && (k < numDims); k++)
+					// Check if we need to add the triangle list to the polygon sub-collection
+					if (triangleList.vertexIndices.size() > 0 || triangleListR.vertexIndices.size() > 0)
 					{
-						// Check if it matches a vertex from the previous face
-						if (vertIndex == fp.vertexIndices[k])
+						// Add the finished triangle list to the polygon sub-collection
+						if (triangleList.vertexIndices.size() >= triangleListR.vertexIndices.size())
 						{
-							// It does, set the found vertex flag
-							foundVertex = true;
+							polygonSubCollection.triangleLists.push_back(triangleList);
+						}
+						else
+						{
+							polygonSubCollection.triangleLists.push_back(triangleListR);
+						}
+						// Clear the triangle list to be used for the new polygon sub-collection
+						triangleList.vertexIndices.clear();
+						triangleListR.vertexIndices.clear();
+						swap = false;
+					}
+					// Check if we need to add the polygon sub-collection to the polygon collection
+					if (polygonSubCollection.triangleLists.size() > 0)
+					{
+						// Add the finished polygon sub-collection the the polygon collection
+						polygonCollection.subcollections.push_back(polygonSubCollection);
+						// Clear the polygon sub-collection for the new polygon list
+						polygonSubCollection.triangleLists.clear();
+						// Reset the sub-collection length
+						subCollectionLen = 0;
+						canConnectPSC = true;
+					}
+					// Check if we need to add the polygon collection to the polygon collections vector
+					if (polygonCollection.subcollections.size() > 0)
+					{
+						// Add the finished polygon collection to the output vector
+						polygonCollections.push_back(polygonCollection);
+						// Clear the polygon collection to be used for the new polygon collection
+						polygonCollection.subcollections.clear();
+					}
+					// Update the current texture index
+					currentTextureIndex = verts[i][vertIndex].textureIndex;
+				}
+				// If this isn't the first face, check if we can connect it to the existing triangle list
+				if (triangleList.vertexIndices.size() >= 3)
+				{
+					// Get the previous faces
+					unsigned int faceOff = 0;
+					for (unsigned int k = 0; k < polygonCollection.subcollections.size(); k++)
+					{
+						for (unsigned int l = 0; l < polygonCollection.subcollections[k].triangleLists.size(); l++)
+						{
+							faceOff += polygonCollection.subcollections[k].triangleLists[l].vertexIndices.size() - 2;
 						}
 					}
-					// Save the status of the vertex
-					vertStatus[j] = foundVertex;
-					// Check if we found the vertex in the previous face
-					if (!foundVertex)
+					for (unsigned int k = 0; k < polygonSubCollection.triangleLists.size(); k++)
 					{
-						// We didn't, so now check if this was the only different vertex
-						for (unsigned int k = 0; k < j && canConnectTL; k++)
+						faceOff += polygonSubCollection.triangleLists[k].vertexIndices.size() - 2;
+					}
+					for (unsigned int k = 0; k < numVertsPerFace; k++)
+					{
+						if ((j - faceOff + k - 1) < triangleList.vertexIndices.size())
 						{
-							canConnectTL = canConnectTL && vertStatus[k];
+							fp.vertexIndices[k] = triangleList.vertexIndices[j - faceOff + k - 1];
+						}
+						if ((j - faceOff + k - 1) < triangleListR.vertexIndices.size())
+						{
+							fpr.vertexIndices[k] = triangleListR.vertexIndices[j - faceOff + k - 1];
 						}
 					}
-				}
-				else
-				{
-					cout << "Error: Invalid Vertex Index referenced by Face " << i << endl;
-					valid = false;
-				}
-			}
-		}
-		// Make sure the face was valid
-		if (valid)
-		{
-			// Check if this is the first face
-			if (triangleList.size() < 3)
-			{
-				// Add all 3 vertices to the triangle list
-				for (unsigned int j = 0; j < numVertsPerFace; j++)
-				{
-					// Get the index of vertex j
-					vertIndex = f.vertexIndices[j];
-					// Make sure the vertex is valid
-					if (vertIndex < verts.size())
-					{
-						// This is the first face, so all we have to do is add the first 3 verts
-						triangleList.push_back(vertIndex);
+					fp.orientation = faces[i][j - 1].orientation;
+					fpr.orientation = fp.orientation;
+					if (fp.vertexIndices[0] < numVerts && fp.vertexIndices[1] < numVerts && fp.vertexIndices[2] < numVerts)
+					{							
+						// For each vertex in the face...
+						for (unsigned int k = 0; k < numVertsPerFace; k++)
+						{
+							// Reset the found vertex flags
+							foundVertex = false;
+							foundVertexR = false;
+							// Get the index of vertex k
+							vertIndex = f.vertexIndices[k];
+							// For each vertex that makes up the previous face...
+							for (unsigned int l = 0; !foundVertex && (l < numDims); l++)
+							{
+								// Check if it matches a vertex from the previous face
+								if (vertIndex == fp.vertexIndices[l])
+								{
+									// It does, set the found vertex flag
+									foundVertex = true;
+								}
+							}
+							vertIndex = fr.vertexIndices[k];
+							for (unsigned int l = 0; !foundVertexR && (l < numDims); l++)
+							{
+								// Check if it matches a vertex from the previous face
+								if (vertIndex == fpr.vertexIndices[l])
+								{
+									// It does, set the found vertex flag
+									foundVertexR = true;
+								}
+							}
+							// Save the status of the vertex
+							vertStatus[k] = foundVertex;
+							vertStatusR[k] = foundVertexR;
+							// Check if we found the vertex in the previous face
+							if (!foundVertex)
+							{
+								// We didn't, so now check if this was the only different vertex
+								for (unsigned int l = 0; l < k && canConnectTL; l++)
+								{
+									canConnectTL = canConnectTL && vertStatus[l];
+								}
+							}
+							if (!foundVertexR)
+							{
+								// We didn't, so now check if this was the only different vertex
+								for (unsigned int l = 0; l < k && canConnectTLR; l++)
+								{
+									canConnectTLR = canConnectTLR && vertStatusR[l];
+								}
+							}
+						}
 					}
 					else
 					{
-						cout << "Error: Invalid Vertex Index referenced by Face " << i << endl;
+						cout << "Error: Invalid Vertex Index referenced by Mesh " << i << " Face " << j - 1 << endl;
 						valid = false;
 					}
 				}
-				// The next face will be clockwise
-				swap = true;
+				// Make sure the face was valid
+				if (valid)
+				{
+					// Check if this is the first face
+					if (triangleList.vertexIndices.size() < 3 && triangleListR.vertexIndices.size() < 3)
+					{
+						// Add all 3 vertices to the triangle list
+						for (unsigned int k = 0; k < numVertsPerFace; k++)
+						{
+							// Get the index of vertex k
+							vertIndex = f.vertexIndices[k];
+							// This is the first face, so all we have to do is add the first 3 verts (plus offset)
+							triangleList.vertexIndices.push_back(vertIndex);
+							vertIndex = fr.vertexIndices[k];
+							triangleListR.vertexIndices.push_back(vertIndex);
+							// Check the origins
+							for (unsigned int l = 0; l < numOrigins; l++)
+							{
+								if (l >= numFilledOrigins)
+								{
+									origins[l] = verts[i][vertIndex].originJointIndex;
+									numFilledOrigins++;
+									originLen += 128;
+									break;
+								}
+								else if (origins[l] == verts[i][vertIndex].originJointIndex)
+								{
+									break;
+								}
+								else if (l == (numOrigins - 1))
+								{
+									// A new origin update is required, so find the unused origin
+									for (unsigned int m = 0; m < numOrigins; m++)
+									{
+										if (origins[m] != verts[i][f.vertexIndices[0]].originJointIndex && origins[m] != verts[i][f.vertexIndices[1]].originJointIndex)
+										{
+											origins[m] = verts[i][vertIndex].originJointIndex;
+										}
+									}
+									// Update the polygon subcollection length
+									originLen += 128;
+								}
+							}
+						}
+						// The next face will be clockwise
+						swap = true;
+					}
+					else
+					{
+						// Check if this face can connect to the previous face
+						if (canConnectTL)
+						{
+							for (unsigned int k = 0; k < numVertsPerFace; k++)
+							{
+								for (unsigned int l = 0; l < numVertsPerFace; l++)
+								{
+									if (f.vertexIndices[k] == fp.vertexIndices[l] && f.vertexIndices[(k + 1) % numVertsPerFace] == fp.vertexIndices[(l + 1) % numVertsPerFace])
+									{
+										// Check if we need to reorder the vertices of the first face
+										if (triangleList.vertexIndices.size() == 3)
+										{
+											bool tmpStatus = vertStatus[0];
+											unsigned int tmpInd = f.vertexIndices[0];
+											// Reorder the vertices
+											vertStatus[0] = vertStatus[k];
+											f.vertexIndices[0] = f.vertexIndices[k];
+											if (k == 1)
+											{
+												vertStatus[1] = vertStatus[2];
+												vertStatus[2] = tmpStatus;
+												f.vertexIndices[1] = f.vertexIndices[2];
+												f.vertexIndices[2] = tmpInd;
+											}
+											else if (k == 2)
+											{
+												vertStatus[2] = vertStatus[1];
+												vertStatus[1] = tmpStatus;
+												f.vertexIndices[2] = f.vertexIndices[1];
+												f.vertexIndices[1] = tmpInd;
+											}
+											triangleList.vertexIndices[0] = fp.vertexIndices[(l + 2) % numVertsPerFace];
+											triangleList.vertexIndices[1] = fp.vertexIndices[l];
+											triangleList.vertexIndices[2] = fp.vertexIndices[(l + 1) % numVertsPerFace];
+										}
+										else if (l != 1)
+										{
+											canConnectTL = false;
+										}
+										k = numVertsPerFace - 1;
+										break;
+									}
+									else if (f.vertexIndices[k] == fp.vertexIndices[l] && f.vertexIndices[(k + 2) % numVertsPerFace] == fp.vertexIndices[(l + 1) % numVertsPerFace])
+									{
+										canConnectTL = false;
+										k = numVertsPerFace - 1;
+										break;
+									}
+									else if (k == (numVertsPerFace - 1) && l == (numVertsPerFace - 1))
+									{
+										// Shouldn't be able to get here
+										canConnectTL = false;
+									}
+								}
+							}
+						}
+						// Check if this face can connect to the previous face
+						if (canConnectTLR)
+						{
+							for (unsigned int k = 0; k < numVertsPerFace; k++)
+							{
+								for (unsigned int l = 0; l < numVertsPerFace; l++)
+								{
+									if (fr.vertexIndices[k] == fpr.vertexIndices[l] && fr.vertexIndices[(k + 1) % numVertsPerFace] == fpr.vertexIndices[(l + 1) % numVertsPerFace])
+									{
+										// Check if we need to reorder the vertices of the first face
+										if (triangleListR.vertexIndices.size() == 3)
+										{
+											bool tmpStatus = vertStatus[0];
+											unsigned int tmpInd = fr.vertexIndices[0];
+											// Reorder the vertices
+											vertStatusR[0] = vertStatusR[k];
+											fr.vertexIndices[0] = fr.vertexIndices[k];
+											if (k == 1)
+											{
+												vertStatusR[1] = vertStatusR[2];
+												vertStatusR[2] = tmpStatus;
+												fr.vertexIndices[1] = fr.vertexIndices[2];
+												fr.vertexIndices[2] = tmpInd;
+											}
+											else if (k == 2)
+											{
+												vertStatusR[2] = vertStatusR[1];
+												vertStatusR[1] = tmpStatus;
+												fr.vertexIndices[2] = fr.vertexIndices[1];
+												fr.vertexIndices[1] = tmpInd;
+											}
+											triangleListR.vertexIndices[0] = fpr.vertexIndices[(l + 2) % numVertsPerFace];
+											triangleListR.vertexIndices[1] = fpr.vertexIndices[l];
+											triangleListR.vertexIndices[2] = fpr.vertexIndices[(l + 1) % numVertsPerFace];
+										}
+										else if (l != 1)
+										{
+											canConnectTLR = false;
+										}
+										k = numVertsPerFace - 1;
+										break;
+									}
+									else if (fr.vertexIndices[k] == fpr.vertexIndices[l] && fr.vertexIndices[(k + 2) % numVertsPerFace] == fpr.vertexIndices[(l + 1) % numVertsPerFace])
+									{
+										canConnectTLR = false;
+										k = numVertsPerFace - 1;
+										break;
+									}
+									else if (k == (numVertsPerFace - 1) && l == (numVertsPerFace - 1))
+									{
+										// Shouldn't be able to get here
+										canConnectTLR = false;
+									}
+								}
+							}
+						}
+						// Initialize length variables
+						faceLen = 48;
+						// Check each vertex
+						for (unsigned int k = 0; k < numVertsPerFace; k++)
+						{
+							// Check if it is a new vertex from the previous face
+							if (!vertStatus[k])
+							{
+								// Check each origin
+								for (unsigned int l = 0; l < numOrigins; l++)
+								{
+									if (l >= numFilledOrigins)
+									{
+										originLen += 128;
+										origins[l] = verts[i][f.vertexIndices[k]].originJointIndex;
+										numFilledOrigins++;
+										break;
+									}
+									else if (origins[l] == verts[i][f.vertexIndices[k]].originJointIndex)
+									{
+										break;
+									}
+									else if (l == (numOrigins - 1))
+									{
+										for (unsigned int m = 0; m < k; m++)
+										{
+											if (verts[i][f.vertexIndices[k]].originJointIndex == verts[i][f.vertexIndices[m]].originJointIndex)
+											{
+												continue;
+											}
+											else if (m == (k - 1))
+											{
+												originLen += 128;
+											}
+										}
+										faceLen = 0;
+										canConnectTL = false;
+										canConnectTLR = false;
+									}
+								}
+							}
+						}
+						triangleListLen = triangleList.vertexIndices.size() * 48 + 32;
+						triangleListRLen = triangleListR.vertexIndices.size() * 48 + 32;
+						// Use the estimated sub-collection size to see if we should start a new sub-collection
+						if ((subCollectionLen + triangleListLen + faceLen + originLen) > lengthThreshold)
+						{
+							// Adding this face to the current triangle list could push it over the size limit
+							canConnectPSC = false;
+						}
+						if ((subCollectionLen + triangleListRLen + faceLen + originLen) > lengthThreshold)
+						{
+							canConnectPSC = false;
+						}
+						// Check if the face is valid to connect to the triangle list
+						if (canConnectTL || canConnectTLR)
+						{
+							if (canConnectTL)
+							{
+								// Check the status of the vertices to find the new vertex
+								for (unsigned int k = 0; k < numDims; k++)
+								{
+									if (!vertStatus[k])
+									{
+										// Add the new vertex to the triangle list
+										triangleList.vertexIndices.push_back(f.vertexIndices[k]);
+										break;
+									}
+									// In case you have a duplicate face to orient the triangle list in a specific way
+									if (k == 2)
+									{
+										// Add the last vertex from the face
+										triangleList.vertexIndices.push_back(f.vertexIndices[2]);
+									}
+								}
+							}
+							if (canConnectTLR)
+							{
+								// Check the status of the vertices to find the new vertex
+								for (unsigned int k = 0; k < numDims; k++)
+								{
+									if (!vertStatusR[k])
+									{
+										// Add the new vertex to the triangle list
+										triangleListR.vertexIndices.push_back(fr.vertexIndices[k]);
+										break;
+									}
+									// In case you have a duplicate face to orient the triangle list in a specific way
+									if (k == 2)
+									{
+										// Add the last vertex from the face
+										triangleListR.vertexIndices.push_back(fr.vertexIndices[2]);
+									}
+								}
+							}
+							// The next face should be the opposite orientation
+							swap = !swap;
+						}
+						else
+						{
+							// Check if we should transition to a new polygon sub-collection
+							if (polygonSubCollection.triangleLists.size() > 0 && !canConnectPSC)
+							{
+								// Add the polygon sub-collection to the polygon collection
+								polygonCollection.subcollections.push_back(polygonSubCollection);
+								// Clear the polygon sub-collection to use for the next sub-collection
+								polygonSubCollection.triangleLists.clear();
+								// Reset the sub-collection length
+								subCollectionLen = 0;
+								canConnectPSC = true;
+							}
+							if (triangleList.vertexIndices.size() > 0 || triangleListR.vertexIndices.size() > 0)
+							{
+								if (triangleList.vertexIndices.size() >= triangleListR.vertexIndices.size())
+								{
+									// Update the sub-collection length
+									subCollectionLen += triangleListLen + originLen;
+									// Reset the origin length now that it is included in the subcollection length
+									originLen = 0;
+									// Add the triangle list to the polygon sub-collection
+									polygonSubCollection.triangleLists.push_back(triangleList);
+								}
+								else
+								{
+									// Update the sub-collection length
+									subCollectionLen += triangleListRLen + originLen;
+									// Reset the origin length now that it is incldued in the subcollection length
+									originLen = 0;
+									// Add the triangle list to the polygon sub-collection
+									polygonSubCollection.triangleLists.push_back(triangleListR);
+								}
+								// Clear the triangle list to use for the new list
+								triangleList.vertexIndices.clear();
+								triangleListR.vertexIndices.clear();
+							}
+							// Check which faces need to have their orientation flipped
+							if (swap && f.orientation == COUNTERCLOCKWISE || !swap && f.orientation == CLOCKWISE)
+							{
+								unsigned int ind = f.vertexIndices[0];
+								f.vertexIndices[0] = f.vertexIndices[1];
+								f.vertexIndices[1] = ind;
+							}
+							if (swap && fr.orientation == COUNTERCLOCKWISE || !swap && fr.orientation == CLOCKWISE)
+							{
+								unsigned int ind = fr.vertexIndices[0];
+								fr.vertexIndices[0] = fr.vertexIndices[1];
+								fr.vertexIndices[1] = ind;
+							}
+							// Add all of the vertices from the current face to the new triangle list
+							for (unsigned int k = 0; k < numDims; k++)
+							{
+								triangleList.vertexIndices.push_back(f.vertexIndices[k]);
+								triangleListR.vertexIndices.push_back(fr.vertexIndices[k]);
+								for (unsigned int l = 0; l < numOrigins; l++)
+								{
+									if (l >= numFilledOrigins)
+									{
+										origins[l] = verts[i][faces[i][j].vertexIndices[k]].originJointIndex;
+										numFilledOrigins++;
+										originLen += 128;
+										break;
+									}
+									else if (origins[l] == verts[i][faces[i][j].vertexIndices[k]].originJointIndex)
+									{
+										break;
+									}
+									else if (l == (numOrigins - 1))
+									{
+										// Reset the origins and try again
+										k = 0;
+										numFilledOrigins = 1;
+										origins[0] = verts[i][faces[i][j].vertexIndices[0]].originJointIndex;
+										originLen = 128;
+										triangleList.vertexIndices.clear();
+										triangleList.vertexIndices.push_back(f.vertexIndices[0]);
+										triangleListR.vertexIndices.clear();
+										triangleListR.vertexIndices.push_back(fr.vertexIndices[0]);
+									}
+								}
+							}
+							// The next face will be clockwise
+							swap = true;
+						}
+					}
+				}
 			}
 			else
 			{
-				// Check if we should transition to a new polygon sub-collection by estimating the current subcollection size
-				subCollectionLen = 48;
-				for (unsigned int j = 0; j < polygonSubCollection.size(); j++)
+				cout << "Error: Invalid Vertex Index referenced by Mesh " << i << ", Face " << j << endl;
+				valid = false;
+			}
+		}
+		// Check if the last triangle list can connect to the polygon sub-collection
+		if (polygonSubCollection.triangleLists.size() > 0 && !canConnectPSC)
+		{
+			polygonCollection.subcollections.push_back(polygonSubCollection);
+			polygonSubCollection.triangleLists.clear();
+		}
+		// Check if we need to add the last triangle list to the current polygon sub-collection
+		if (triangleList.vertexIndices.size() > 0 || triangleListR.vertexIndices.size() > 0)
+		{
+			if (triangleList.vertexIndices.size() >= triangleListR.vertexIndices.size())
+			{
+				polygonSubCollection.triangleLists.push_back(triangleList);
+			}
+			else
+			{
+				polygonSubCollection.triangleLists.push_back(triangleListR);
+			}
+			triangleList.vertexIndices.clear();
+			triangleListR.vertexIndices.clear();
+		}
+		// Check if we need to add the last polygon sub-collection to the current polygon collection
+		if (polygonSubCollection.triangleLists.size() > 0)
+		{
+			polygonCollection.subcollections.push_back(polygonSubCollection);
+			polygonSubCollection.triangleLists.clear();
+		}
+		// Check if we need to add the last polygon collection to the output
+		if (polygonCollection.subcollections.size() > 0)
+		{
+			polygonCollections.push_back(polygonCollection);
+			polygonCollection.subcollections.clear();
+		}
+	}
+	// Condense the polygon collections
+	//polygonCollections = condensePolygonCollections(verts, polygonCollections);
+	return valid;
+}
+
+vector<PolygonCollection> condensePolygonCollections(vector<vector<VertexRelative>> verts, vector<PolygonCollection> polygonCollections)
+{
+	vector<PolygonCollection> condensed = polygonCollections;
+	unsigned int numMeshes = polygonCollections.size();
+	// For each mesh
+	for (unsigned int meshInd = 0; meshInd < numMeshes; meshInd++)
+	{
+		PolygonCollection pc = polygonCollections[meshInd];
+		vector<TriangleList> triangleLists;
+		// Store all of the polygon collection's triangle lists
+		for (unsigned int i = 0; i < pc.subcollections.size(); i++)
+		{
+			PolygonSubCollection psc = pc.subcollections[i];
+			for (unsigned int j = 0; j < psc.triangleLists.size(); j++)
+			{
+				triangleLists.push_back(psc.triangleLists[j]);
+			}
+		}
+		// Check if we can combine any of the triangle lists
+		for (unsigned int i = (triangleLists.size() - 2); i < triangleLists.size(); i--)
+		{
+			TriangleList ti = triangleLists[i];
+			if (i == 2)
+			{
+				cout << "Target" << endl;
+			}
+			if (ti.vertexIndices.size() > 0)
+			{
+				for (unsigned int j = (triangleLists.size() - 1); j > i; j--)
 				{
-					subCollectionLen += polygonSubCollection[j].size() * 176 + 32;
-				}
-				triangleListLen = (triangleList.size() + 1) * 176 + 32;
-				// Use the estimated sub-collection size to see if we should start a new sub-collection
-				if ((subCollectionLen + triangleListLen) > lengthThreshold)
-				{
-					// Adding this face to the current triangle list could push it over the size limit
-					canConnectTL = false;
-					canConnectPSC = false;
-				}
-				// Check if this face can connect to the previous face
-				if (canConnectTL)
-				{
-					if (triangleList.size() == 3)
+					TriangleList tj = triangleLists[j];
+					if (tj.vertexIndices.size() > 0)
 					{
-						Face fr = f, fpr = fp;
-						// We can play with the order of the original face to append the second face
-						for (unsigned int j = 0; j < numVertsPerFace; j++)
+						const int numOrigins = 3;
+						unsigned int numFilledOrigins = 0, origins[numOrigins];
+						// Determine the number of origins that will be used if we combine the triangle lists
+						for (unsigned int k = 0; k < ti.vertexIndices.size(); k++)
 						{
-							if (vertStatus[0] && (f.vertexIndices[0] == fp.vertexIndices[j]))
+							for (unsigned int l = 0; l < numOrigins; l++)
 							{
-								// Use vertex 0 neighbors
-								if (f.vertexIndices[1] == (fp.vertexIndices[(j + 1) % numVertsPerFace]))
+								if (l == numFilledOrigins)
 								{
-									fpr.vertexIndices[0] = fp.vertexIndices[(j + 2) % numVertsPerFace];
-									fpr.vertexIndices[1] = fp.vertexIndices[j];
-									fpr.vertexIndices[2] = fp.vertexIndices[(j + 1) % numVertsPerFace];
-									vertStatus[2] = false;
+									if (numFilledOrigins < numOrigins)
+									{
+										origins[numFilledOrigins] = verts[meshInd][ti.vertexIndices[k]].originJointIndex;
+									}
+									numFilledOrigins++;
+									break;
 								}
-								else if (f.vertexIndices[2] == (fp.vertexIndices[(j + 2) % numVertsPerFace]))
+								else if (origins[l] == verts[meshInd][ti.vertexIndices[k]].originJointIndex)
 								{
-									fr.vertexIndices[0] = f.vertexIndices[2];
-									fr.vertexIndices[1] = f.vertexIndices[0];
-									fr.vertexIndices[2] = f.vertexIndices[1];
-									fpr.vertexIndices[0] = fp.vertexIndices[(j + 1) % numVertsPerFace];
-									fpr.vertexIndices[1] = fp.vertexIndices[(j + 2) % numVertsPerFace];
-									fpr.vertexIndices[2] = fp.vertexIndices[j];
-									vertStatus[1] = true;
-									vertStatus[2] = false;
+									break;
 								}
-								else
-								{
-									// This face cannot connect, because it is the incorrect orientation
-									canConnectTL = false;
-								}
-								break;
-							}
-							else if (f.vertexIndices[1] == fp.vertexIndices[j])
-							{
-								// Use vertex 1 neighbors
-								if (f.vertexIndices[2] == (fp.vertexIndices[(j + 1) % numVertsPerFace]))
-								{
-									fr.vertexIndices[0] = f.vertexIndices[1];
-									fr.vertexIndices[1] = f.vertexIndices[2];
-									fr.vertexIndices[2] = f.vertexIndices[0];
-									fpr.vertexIndices[0] = fp.vertexIndices[(j + 2) % numVertsPerFace];
-									fpr.vertexIndices[1] = fp.vertexIndices[j];
-									fpr.vertexIndices[2] = fp.vertexIndices[(j + 1) % numVertsPerFace];
-									vertStatus[0] = true;
-									vertStatus[2] = false;
-								}
-								else if (f.vertexIndices[0] == (fp.vertexIndices[(j + 2) % numVertsPerFace]))
-								{
-									fpr.vertexIndices[0] = fp.vertexIndices[(j + 1) % numVertsPerFace];
-									fpr.vertexIndices[1] = fp.vertexIndices[(j + 2) % numVertsPerFace];
-									fpr.vertexIndices[2] = fp.vertexIndices[j];
-									vertStatus[2] = false;
-								}
-								else
-								{
-									// This face cannot connect because it is the incorrect orientation
-									canConnectTL = false;
-								}
-								break;
 							}
 						}
-						// Update the face order if we need to
-						if (canConnectTL)
+						for (unsigned int k = 0; k < tj.vertexIndices.size(); k++)
 						{
-							// Update f and fp
-							f = fr;
-							fp = fpr;
-							// Check if we need to swap fpr
-							if (!swap)
+							for (unsigned int l = 0; l < numOrigins; l++)
 							{
-								unsigned int ind = fpr.vertexIndices[0];
-								fpr.vertexIndices[0] = fpr.vertexIndices[1];
-								fpr.vertexIndices[1] = ind;
+								if (l == numFilledOrigins)
+								{
+									if (numFilledOrigins < numOrigins)
+									{
+										origins[numFilledOrigins] = verts[meshInd][tj.vertexIndices[k]].originJointIndex;
+									}
+									numFilledOrigins++;
+									break;
+								}
+								else if (origins[l] == verts[meshInd][tj.vertexIndices[k]].originJointIndex)
+								{
+									break;
+								}
 							}
-							// Update the stored previous face in the triangle list
-							for (unsigned int j = 0; j < numVertsPerFace; j++)
+						}
+						// Make sure the number of origins is valid before combining
+						if (numFilledOrigins <= numOrigins)
+						{
+							TriangleList comb;
+							// Check if we can play with the vertex order
+							if (ti.vertexIndices.size() == 3 || tj.vertexIndices.size() == 3)
 							{
-								triangleList[j] = fpr.vertexIndices[j];
+								TriangleList tb, tr;
+								Face fbo, fbn, fro, frn;
+								if (ti.vertexIndices.size() == 3)
+								{
+									tb = tj;
+									tr = ti;
+									fbo.orientation = tj.orientation;
+									fbn.orientation = (tj.orientation + (tj.vertexIndices.size() - 2) % 2) % 2;
+									fro.orientation = ti.orientation;
+									for (unsigned int k = 0; k < numVertsPerFace; k++)
+									{
+										fbo.vertexIndices[k] = tj.vertexIndices[k];
+										fbn.vertexIndices[k] = tj.vertexIndices[tj.vertexIndices.size() - numVertsPerFace + k];
+										fro.vertexIndices[k] = ti.vertexIndices[k];
+									}
+								}
+								else
+								{
+									tb = ti;
+									tr = tj;
+									fbo.orientation = ti.orientation;
+									fbn.orientation = (ti.orientation + (ti.vertexIndices.size() - 2) % 2) % 2;
+									fro.orientation = tj.orientation;
+									for (unsigned int k = 0; k < numVertsPerFace; k++)
+									{
+										fbo.vertexIndices[k] = ti.vertexIndices[k];
+										fbn.vertexIndices[k] = ti.vertexIndices[ti.vertexIndices.size() - numVertsPerFace + k];
+										fro.vertexIndices[k] = tj.vertexIndices[k];
+									}
+								}
+								frn = fro;
+								if (frn.orientation == fbo.orientation)
+								{
+									unsigned int tmp = frn.vertexIndices[0];
+									frn.vertexIndices[0] = frn.vertexIndices[1];
+									frn.vertexIndices[1] = tmp;
+									frn.orientation = !frn.orientation;
+								}
+								if (fro.orientation == fbn.orientation)
+								{
+									unsigned int tmp = fro.vertexIndices[0];
+									fro.vertexIndices[0] = fro.vertexIndices[1];
+									fro.vertexIndices[1] = tmp;
+									fro.orientation = !fro.orientation;
+								}
+								for (unsigned int k = 0; k < numVertsPerFace; k++)
+								{
+									for (unsigned int l = 0; l < numVertsPerFace; l++)
+									{
+										if (frn.vertexIndices[k] == fbo.vertexIndices[l] && frn.vertexIndices[(k + 1) % numVertsPerFace] == fbo.vertexIndices[(l + 1) % numVertsPerFace])
+										{
+											unsigned int tmp = frn.vertexIndices[0];
+											switch (k)
+											{
+											case 0:
+												frn.vertexIndices[0] = frn.vertexIndices[2];
+												frn.vertexIndices[2] = frn.vertexIndices[1];
+												frn.vertexIndices[1] = tmp;
+												break;
+											case 2:
+												frn.vertexIndices[0] = frn.vertexIndices[1];
+												frn.vertexIndices[1] = frn.vertexIndices[2];
+												frn.vertexIndices[2] = tmp;
+												break;
+											}
+											tmp = fbo.vertexIndices[0];
+											switch (l)
+											{
+											case 1:
+												fbo.vertexIndices[0] = fbo.vertexIndices[1];
+												fbo.vertexIndices[1] = fbo.vertexIndices[2];
+												fbo.vertexIndices[2] = tmp;
+												break;
+											case 2:
+												fbo.vertexIndices[0] = fbo.vertexIndices[2];
+												fbo.vertexIndices[2] = fbo.vertexIndices[1];
+												fbo.vertexIndices[1] = tmp;
+												break;
+											}
+											if (tb.vertexIndices.size() == 3 || l == 1)
+											{
+												comb.orientation = frn.orientation;
+												comb.vertexIndices.push_back(frn.vertexIndices[0]);
+												if (l == 0)
+												{
+													for (unsigned int m = 0; m < tb.vertexIndices.size(); m++)
+													{
+														comb.vertexIndices.push_back(tb.vertexIndices[m]);
+													}
+												}
+												else
+												{
+													for (unsigned int m = 0; m < numVertsPerFace; m++)
+													{
+														comb.vertexIndices.push_back(fbo.vertexIndices[m]);
+													}
+												}
+												k = numVertsPerFace;
+												break;
+											}
+										}
+										else if (fro.vertexIndices[k] == fbn.vertexIndices[l] && fro.vertexIndices[(k + 1) % numVertsPerFace] == fbn.vertexIndices[(l + 1) % numVertsPerFace])
+										{
+											unsigned int tmp = fro.vertexIndices[0];
+											switch (k)
+											{
+											case 1:
+												fro.vertexIndices[0] = fro.vertexIndices[1];
+												fro.vertexIndices[1] = fro.vertexIndices[2];
+												fro.vertexIndices[2] = tmp;
+												break;
+											case 2:
+												fro.vertexIndices[0] = fro.vertexIndices[2];
+												fro.vertexIndices[2] = fro.vertexIndices[1];
+												fro.vertexIndices[1] = tmp;
+												break;
+											}
+											tmp = fbn.vertexIndices[0];
+											switch (l)
+											{
+											case 0:
+												fbn.vertexIndices[0] = fbn.vertexIndices[2];
+												fbn.vertexIndices[2] = fbn.vertexIndices[1];
+												fbn.vertexIndices[1] = tmp;
+												break;
+											case 2:
+												fbn.vertexIndices[0] = fbn.vertexIndices[1];
+												fbn.vertexIndices[1] = fbn.vertexIndices[2];
+												fbn.vertexIndices[2] = tmp;
+												break;
+											}
+											if (tb.vertexIndices.size() == 3 || l == 1)
+											{
+												comb.orientation = tb.orientation;
+												if (l == 1)
+												{
+													for (unsigned int m = 0; m < tb.vertexIndices.size(); m++)
+													{
+														comb.vertexIndices.push_back(tb.vertexIndices[m]);
+													}
+												}
+												else
+												{
+													for (unsigned int m = 0; m < numVertsPerFace; m++)
+													{
+														comb.vertexIndices.push_back(fbn.vertexIndices[m]);
+													}
+												}
+												comb.vertexIndices.push_back(fro.vertexIndices[2]);
+												k = numVertsPerFace;
+												break;
+											}
+										}
+									}
+								}
+							}
+							else
+							{
+								Face fio, fin, fjo, fjn;
+								fio.orientation = ti.orientation;
+								fjo.orientation = tj.orientation;
+								fin.orientation = (ti.orientation + (ti.vertexIndices.size() - 2) % 2) % 2;
+								fjn.orientation = (tj.orientation + (tj.vertexIndices.size() - 2) % 2) % 2;
+								for (unsigned int k = 0; k < numVertsPerFace; k++)
+								{
+									fio.vertexIndices[k] = ti.vertexIndices[k];
+									fjo.vertexIndices[k] = tj.vertexIndices[k];
+									fin.vertexIndices[k] = ti.vertexIndices[ti.vertexIndices.size() - numVertsPerFace + k];
+									fjn.vertexIndices[k] = tj.vertexIndices[tj.vertexIndices.size() - numVertsPerFace + k];
+								}
+								if (fin.orientation == !fjo.orientation && fin.vertexIndices[1] == fjo.vertexIndices[0] && fin.vertexIndices[2] == fjo.vertexIndices[1])
+								{
+									comb = ti;
+									for (unsigned int k = 2; k < tj.vertexIndices.size(); k++)
+									{
+										comb.vertexIndices.push_back(tj.vertexIndices[k]);
+									}
+								}
+								else if (fin.orientation == fjn.orientation && fjn.vertexIndices[1] == fin.vertexIndices[2] && fjn.vertexIndices[2] == fin.vertexIndices[1])
+								{
+									comb = tj;
+									for (unsigned int k = ti.vertexIndices.size() - 1; k > 1; k--)
+									{
+										comb.vertexIndices.push_back(ti.vertexIndices[k]);
+									}
+								}
+								else if (fio.orientation == !fjn.orientation && fjn.vertexIndices[1] == fio.vertexIndices[0] && fjn.vertexIndices[2] == fio.vertexIndices[1])
+								{
+									comb = tj;
+									for (unsigned int k = 2; k < ti.vertexIndices.size(); k++)
+									{
+										comb.vertexIndices.push_back(ti.vertexIndices[k]);
+									}
+								}
+								else if (fio.orientation == fjo.orientation && fio.vertexIndices[1] == fjo.vertexIndices[0] && fio.vertexIndices[0] == fjo.vertexIndices[1])
+								{
+									for (unsigned int k = ti.vertexIndices.size() - 1; k > 1; k--)
+									{
+										comb.vertexIndices.push_back(ti.vertexIndices[k]);
+									}
+									for (unsigned int k = 0; k < tj.vertexIndices.size(); k++)
+									{
+										comb.vertexIndices.push_back(tj.vertexIndices[k]);
+									}
+								}
+							}
+							if (comb.vertexIndices.size() > 0)
+							{
+								triangleLists[i] = comb;
+								triangleLists.erase(triangleLists.begin() + j);
 							}
 						}
 					}
 					else
 					{
-						// We must enforce the established order
-						canConnectTL = f.vertexIndices[0] == fp.vertexIndices[1] && f.vertexIndices[1] == f.vertexIndices[2];
+						triangleLists.erase(triangleLists.begin() + j);
 					}
 				}
-				// Check if the face is valid to connect to the triangle list
-				if (canConnectTL)
+			}
+			else
+			{
+				triangleLists.erase(triangleLists.begin() + i);
+			}
+		}
+		// Convert the triangle lists back into polygon subcollections
+		if (triangleLists.size() > 0)
+		{
+			const unsigned int numOrigins = 3;
+			bool canConnectPSC = true;
+			unsigned int pscLen = 0, numFilledOrigins = 0, numFilledPrevOrigins = 0, origins[numOrigins], prevOrigins[numOrigins];
+			PolygonCollection pc_cond;
+			PolygonSubCollection psc;
+			for (unsigned int i = 0; i < triangleLists.size(); i++)
+			{
+				TriangleList ti = triangleLists[i];
+				unsigned int tlLen = ti.vertexIndices.size() * 48 + 32, originLen = 0;
+				for (unsigned int j = 0; j < ti.vertexIndices.size(); j++)
 				{
-					// Check the status of the vertices to find the new vertex
-					for (unsigned int j = 0; j < numDims; j++)
+					for (unsigned int k = 0; k < numOrigins; k++)
 					{
-						if (!vertStatus[j])
+						if (k == numFilledOrigins)
 						{
-							// Add the new vertex to the triangle list
-							triangleList.push_back(f.vertexIndices[j]);
+							bool isPrev = false;
+							for (unsigned int l = 0; l < numFilledPrevOrigins; l++)
+							{
+								if (verts[meshInd][ti.vertexIndices[j]].originJointIndex == prevOrigins[l])
+								{
+									isPrev = true;
+									origins[k] = prevOrigins[l];
+								}
+							}
+							if (!isPrev)
+							{
+								if (numFilledOrigins < numOrigins)
+								{
+									origins[k] = verts[meshInd][ti.vertexIndices[j]].originJointIndex;
+									numFilledOrigins++;
+									originLen += 128;
+								}
+								else
+								{
+									for (unsigned int l = 0; l < numFilledOrigins; l++)
+									{
+										prevOrigins[l] = origins[l];
+									}
+									numFilledPrevOrigins = numOrigins;
+									origins[0] = verts[meshInd][ti.vertexIndices[j]].originJointIndex;
+									numFilledOrigins = 1;
+									originLen += 128;
+								}
+							}
 							break;
 						}
-						// Just in case...You shouldn't be able to achieve this condition
-						if (j == 2)
+						else if (verts[meshInd][ti.vertexIndices[j]].originJointIndex == origins[k])
 						{
-							// Add the first vertex from the face
-							triangleList.push_back(f.vertexIndices[0]);
+							break;
 						}
 					}
-					// The next face should be the opposite orientation
-					swap = !swap;
+				}
+				if ((pscLen + originLen + tlLen) < 4032)
+				{
+					psc.triangleLists.push_back(ti);
+					pscLen += originLen + tlLen;
 				}
 				else
 				{
-					// Add the triangle list to the polygon sub-collection
-					polygonSubCollection.push_back(triangleList);
-					// Clear the triangle list to use for the new list
-					triangleList.clear();
-					// Check if we should transition to a new polygon sub-collection
-					if (!canConnectPSC)
-					{
-						// Add the polygon sub-collection to the polygon collection
-						polygonCollection.push_back(polygonSubCollection);
-						// Clear the polygon sub-collection to use for the next sub-collection
-						polygonSubCollection.clear();
-						canConnectPSC = true;
-					}
-					// Add all of the vertices from the current face to the new triangle list
-					for (unsigned int j = 0; j < numDims; j++)
-					{
-						triangleList.push_back(faces[i].vertexIndices[j]);
-					}
-					// The next face will be clockwise
-					swap = true;
+					pc_cond.subcollections.push_back(psc);
+					psc.triangleLists.clear();
+					psc.triangleLists.push_back(ti);
+					pscLen = originLen + tlLen;
 				}
+			}
+			if (psc.triangleLists.size() > 0)
+			{
+				pc_cond.subcollections.push_back(psc);
+			}
+			if (pc_cond.subcollections.size() > 0)
+			{
+				condensed[meshInd] = pc_cond;
 			}
 		}
 	}
-	// Check if we need to add the last triangle list to the current polygon sub-collection
-	if (triangleList.size() > 0)
-	{
-		polygonSubCollection.push_back(triangleList);
-	}
-	// Check if we need to add the last polygon sub-collection to the current polygon collection
-	if (polygonSubCollection.size() > 0)
-	{
-		polygonCollection.push_back(polygonSubCollection);
-	}
-	// Check if we need to add the last polygon collection to the output
-	if (polygonCollection.size() > 0)
-	{
-		polygonCollections.push_back(polygonCollection);
-	}
-	return valid;
+	return condensed;
 }
 
-unsigned int countFaces(vector<vector<vector<vector<unsigned int>>>> polygonCollections)
+unsigned int countFaces(vector<PolygonCollection> polygonCollections)
 {
 	unsigned int count = 0;
 	for (unsigned int i = 0; i < polygonCollections.size(); i++)
 	{
-		vector<vector<vector<unsigned int>>> *polygonCollection = &(polygonCollections[i]);
-		for (unsigned int j = 0; j < polygonCollection->size(); j++)
+		PolygonCollection *polygonCollection = &(polygonCollections[i]);
+		for (unsigned int j = 0; j < polygonCollection->subcollections.size(); j++)
 		{
-			vector<vector<unsigned int>> *subCollection = &((*polygonCollection)[j]);
-			for (unsigned int k = 0; k < subCollection->size(); k++)
+			PolygonSubCollection *subCollection = &((*polygonCollection).subcollections[j]);
+			for (unsigned int k = 0; k < subCollection->triangleLists.size(); k++)
 			{
-				vector<unsigned int> *triangleList = &((*subCollection)[k]);
-				unsigned int numVerts = triangleList->size();
+				TriangleList *triangleList = &((*subCollection).triangleLists[k]);
+				unsigned int numVerts = triangleList->vertexIndices.size();
 				if (numVerts >= 3)
 				{
 					count += numVerts - 2;
@@ -7251,76 +8854,95 @@ unsigned int countFaces(vector<vector<vector<vector<unsigned int>>>> polygonColl
 	return count;
 }
 
-bool compareFacesToPolygonCollections(vector<Face> faces, vector<vector<vector<vector<unsigned int>>>> polygonCollections)
+bool compareFacesToPolygonCollections(vector<vector<Face>> faces, vector<PolygonCollection> polygonCollections)
 {
 	vector<Face> collectionFaces;
-	unsigned int numFaces = faces.size(), numPolygonCollectionFaces = countFaces(polygonCollections);
-	bool result = numFaces == numPolygonCollectionFaces, swap = false;
+	unsigned int numFaces = 0, numPolygonCollectionFaces = countFaces(polygonCollections);
+	bool result, swap = false;
+	// Determine the number of faces in the vector
+	for (unsigned int i = 0; i < faces.size(); i++)
+	{
+		numFaces += faces[i].size();
+	}
+	// Compare the number of faces in the vector to those in the polygon collection
+	result = numFaces == numPolygonCollectionFaces;
+	/*
 	if (result)
 	{
-		unsigned int polygonCollectionInd = 0, subCollectionInd = 0, triangleListInd = 0, vertexInd = 0;
+		unsigned int polygonCollectionInd = 0, subCollectionInd = 0, triangleListInd = 0, vertexInd = 0, meshVertexOffset = 0;
 		collectionFaces.reserve(numFaces);
-		for (unsigned int i = 0; result && i < numFaces; i++)
+		for (unsigned int i = 0; result && i < faces.size(); i++)
 		{
-			Face fi = faces[i], fpci;
-			bool matchingFace = true;
-			if (polygonCollectionInd < polygonCollections.size())
+			if (i > 0)
 			{
-				vector<vector<vector<unsigned int>>> pc = polygonCollections[polygonCollectionInd];
-				if (subCollectionInd < pc.size())
+				meshVertexOffset += faces[i].size();
+			}
+			for (unsigned int j = 0; j < faces[i].size(); j++)
+			{
+				Face fi = faces[i][j], fpcj;
+				bool matchingFace = true;
+				if (polygonCollectionInd < polygonCollections.size())
 				{
-					vector<vector<unsigned int>> sc = pc[subCollectionInd];
-					if (triangleListInd < sc.size())
+					vector<vector<vector<unsigned int>>> pc = polygonCollections[polygonCollectionInd];
+					if (subCollectionInd < pc.size())
 					{
-						vector<unsigned int> tl = sc[triangleListInd];
-						unsigned int j;
-						for (j = 0; vertexInd < tl.size() && j < numVertsPerFace; j++)
+						vector<vector<unsigned int>> sc = pc[subCollectionInd];
+						if (triangleListInd < sc.size())
 						{
-							fpci.vertexIndices[j] = tl[vertexInd];
-							vertexInd++;
-						}
-						if (j != numVertsPerFace)
-						{
-							matchingFace = false;
-						}
-						else
-						{
-							collectionFaces.push_back(fpci);
-						}
-						if (swap)
-						{
-							unsigned int val = fpci.vertexIndices[1];
-							fpci.vertexIndices[1] = fpci.vertexIndices[2];
-							fpci.vertexIndices[2] = val;
-						}
-						for (j = 0; matchingFace && j < numVertsPerFace; j++)
-						{
-							if (fi.vertexIndices[j] != fpci.vertexIndices[j])
+							vector<unsigned int> tl = sc[triangleListInd];
+							unsigned int k;
+							for (k = 0; vertexInd < tl.size() && k < numVertsPerFace; k++)
+							{
+								fpcj.vertexIndices[k] = tl[vertexInd] - meshVertexOffset;
+								vertexInd++;
+							}
+							if (j != numVertsPerFace)
 							{
 								matchingFace = false;
 							}
-						}
-						result = result && matchingFace;
-						if (vertexInd == tl.size())
-						{
-							vertexInd = 0;
-							triangleListInd++;
-							swap = false;
-							if (triangleListInd == sc.size())
+							else
 							{
-								triangleListInd = 0;
-								subCollectionInd++;
-								if (subCollectionInd == pc.size())
+								collectionFaces.push_back(fpcj);
+							}
+							if (swap)
+							{
+								unsigned int val = fpcj.vertexIndices[1];
+								fpcj.vertexIndices[1] = fpcj.vertexIndices[2];
+								fpcj.vertexIndices[2] = val;
+							}
+							for (j = 0; matchingFace && j < numVertsPerFace; j++)
+							{
+								if (fi.vertexIndices[j] != fpcj.vertexIndices[j])
 								{
-									subCollectionInd = 0;
-									polygonCollectionInd++;
+									matchingFace = false;
 								}
+							}
+							result = result && matchingFace;
+							if (vertexInd == tl.size())
+							{
+								vertexInd = 0;
+								triangleListInd++;
+								swap = false;
+								if (triangleListInd == sc.size())
+								{
+									triangleListInd = 0;
+									subCollectionInd++;
+									if (subCollectionInd == pc.size())
+									{
+										subCollectionInd = 0;
+										polygonCollectionInd++;
+									}
+								}
+							}
+							else
+							{
+								vertexInd -= 2;
+								swap = !swap;
 							}
 						}
 						else
 						{
-							vertexInd -= 2;
-							swap = !swap;
+							result = false;
 						}
 					}
 					else
@@ -7333,12 +8955,9 @@ bool compareFacesToPolygonCollections(vector<Face> faces, vector<vector<vector<v
 					result = false;
 				}
 			}
-			else
-			{
-				result = false;
-			}
 		}
 	}
+	*/
 	return result;
 }
 
@@ -7365,18 +8984,20 @@ VertexRelative convertJointToVert(JointRelative joint)
 	return v;
 }
 
-vector<VertexRelative> convertJointsToVerts(vector<JointRelative> joints)
+vector<vector<VertexRelative>> convertJointsToVerts(vector<JointRelative> joints)
 {
 	VertexRelative v;
-	vector<VertexRelative> verts;
+	vector<vector<VertexRelative>> verts;
+	verts.reserve(1);
+	verts.push_back(vector<VertexRelative>());
 	// Reserve space for each vertex
-	verts.reserve(joints.size());
+	verts[0].reserve(joints.size());
 	// Create a vertex for each joint
 	for (unsigned int i = 0; i < joints.size(); i++)
 	{
 		v = convertJointToVert(joints[i]);
 		// Add the vertex to the verts vector
-		verts.push_back(v);
+		verts[0].push_back(v);
 	}
 	return verts;
 }
@@ -7459,63 +9080,164 @@ vector<Animation> convertMsetStaticAnimationsToAnimations(vector<JointRelative> 
 	return anims;
 }
 
-bool normalizePosition(vector<VertexGlobal> vertices, float adjustments[], float &max)
+bool normalizePosition(vector<vector<VertexGlobal>> vertices, vector<vector<VertexGlobal>> &vertexOutput, vector<JointRelative> joints, vector<JointRelative> *jointOutput)
 {
-	bool valid = true;
+	bool valid;
 	// Initialize max
-	max = numeric_limits<float>::min();
+	float max = numeric_limits<float>::min();
 	float min = numeric_limits<float>::max(), tempCoord, maxes[numDims] = { max, max, max }, mins[numDims] = { min, min, min };
-	// Find the min and max values for the coordinates
-	for (unsigned int i = 0; i < vertices.size(); i++)
+	vector<JointGlobal> jointsG;
+	// Intialize the outputs to the input
+	if (jointOutput == NULL)
 	{
-		for (unsigned int j = 0; j < numDims; j++)
+		jointOutput = &joints;
+	}
+	else
+	{
+		*jointOutput = joints;
+	}
+	vertexOutput = vertices;
+	// Get the global joint coordinates
+	valid = getJointsGlobal(joints, jointsG);
+	// Make sure the conversion was successful
+	if (valid)
+	{
+		// Find the min and max values for the coordinates
+		for (unsigned int i = 0; i < joints.size(); i++)
 		{
-			tempCoord = vertices[i].coordinates[j];
-			if (tempCoord < mins[j])
+			for (unsigned int j = 0; j < numDims; j++)
 			{
-				mins[j] = tempCoord;
-			}
-			if (tempCoord > maxes[j])
-			{
-				maxes[j] = tempCoord;
+				tempCoord = jointsG[i].coordinates[j];
+				if (tempCoord < mins[j])
+				{
+					mins[j] = tempCoord;
+				}
+				if (tempCoord > maxes[j])
+				{
+					maxes[j] = tempCoord;
+				}
 			}
 		}
-	}
-	// Translate the model to be centered around the origin
-	for (unsigned int i = 0; i < numDims; i++)
-	{
-		// Determine the middle value for the dim
-		adjustments[i] = (maxes[i] + mins[i]) / 2;
-		// Adjust the max and min values for this dim to reflect the transform
-		maxes[i] -= adjustments[i];
-		mins[i] -= adjustments[i];
+		for (unsigned int i = 0; i < vertices.size(); i++)
+		{
+			for (unsigned int j = 0; j < vertices[i].size(); j++)
+			{
+				for (unsigned int k = 0; k < numDims; k++)
+				{
+					tempCoord = vertices[i][j].coordinates[k];
+					if (tempCoord < mins[k])
+					{
+						mins[k] = tempCoord;
+					}
+					if (tempCoord > maxes[k])
+					{
+						maxes[k] = tempCoord;
+					}
+				}
+			}
+		}
 		// Determine the absolute min and max values
-		if (mins[i] < min)
+		for (unsigned int i = 0; i < numDims; i++)
 		{
-			min = mins[i];
+			if (mins[i] < min)
+			{
+				min = mins[i];
+			}
+			if (maxes[i] > max)
+			{
+				max = maxes[i];
+			}
 		}
-		if (maxes[i] > max)
+		// Determine max magnitude for scaling
+		if ((-min) > max)
 		{
-			max = maxes[i];
+			max = -min;
 		}
-	}
-	// Determine max magnitude for scaling
-	if ((-min) > max)
-	{
-		max = -min;
+		// Scale the joints
+		for (unsigned int i = 0; i < joints.size(); i++)
+		{
+			for (unsigned int j = 0; j < numDims; j++)
+			{
+				(*jointOutput)[i].coordinates[j] = joints[i].coordinates[j] / max;
+			}
+		}
+		// Scale the vertices
+		for (unsigned int i = 0; i < vertices.size(); i++)
+		{
+			for (unsigned int j = 0; j < vertices[i].size(); j++)
+			{
+				for (unsigned int k = 0; k < numDims; k++)
+				{
+					vertexOutput[i][j].coordinates[k] = vertices[i][j].coordinates[k] / max;
+				}
+			}
+		}
 	}
 	return valid;
 }
 
-// Parse through the template vertex data and modify the origin update sections to match the rigging from vertices
-bool updateRigging(vector<JointRelative> joints, vector<JointRelative> templateJoints, vector<VertexRelative> vertices, vector<Face> faces, string templateVertexData, string &vertexData)
+bool normalizePosition(vector<vector<VertexRelative>> vertices, vector<vector<VertexRelative>> &vertexOutput, vector<JointRelative> joints, vector<JointRelative>*jointOutput)
 {
 	bool valid;
-	unsigned int readIndex = 0, type, jointIndex, originIndex, vertexInd, vertexIndInd, faceInd = 0, numJoints = joints.size(), numVerts = vertices.size(), numFaces = faces.size(), numTemplateJoints = templateJoints.size(), templateLen = templateVertexData.size(), originJointInds[numOrigins] = { 0, 0, 0, 0, 0, 0 }, updatedOrigins[numOrigins] = { 0, 0, 0, 0, 0, 0 };
+	vector<JointGlobal> jointsG;
+	vector<vector<VertexGlobal>> vertsG;
+	vertexOutput = vertices;
+	valid = getVerticesGlobal(joints, vertices, vertsG);
+	if (valid)
+	{
+		valid = normalizePosition(vertsG, vertsG, joints, jointOutput);
+		if (valid)
+		{
+			valid = getVerticesRelative(joints, vertsG, vertexOutput);
+		}
+	}
+	return valid;
+}
+
+bool flipUVCoordinates(vector<vector<VertexGlobal>> vertices, vector<vector<VertexGlobal>> &output)
+{
+	bool valid = true;
+	unsigned int numMeshes = vertices.size(), numVerts;
+	// Copy the vertices into the output vector
+	output = vertices;
+	// Flip all of the V coordinates
+	for (unsigned int i = 0; i < numMeshes; i++)
+	{
+		numVerts = vertices[i].size();
+		for (unsigned int j = 0; j < numVerts; j++)
+		{
+			output[i][j].textureMap[1] = 1 - output[i][j].textureMap[1];
+		}
+	}
+	return valid;
+}
+
+bool flipUVCoordinates(vector<vector<VertexRelative>> vertices, vector<vector<VertexRelative>> &output)
+{
+	return flipUVCoordinates(*(vector<vector<VertexGlobal>>*)&(vertices), *(vector<vector<VertexGlobal>>*)&(output));
+}
+
+// Parse through the template vertex data and modify the origin update sections to match the rigging from vertices
+bool updateRigging(vector<JointRelative> joints, vector<JointRelative> templateJoints, vector<vector<VertexRelative>> vertices, vector<vector<Face>> faces, string templateVertexData, string &vertexData)
+{
+	bool valid;
+	const unsigned int numOrigins = 3;
+	unsigned int readIndex = 0, type, jointIndex, originIndex, meshInd = 0, vertexInd, vertexIndInd, faceInd = 0, numJoints = joints.size(), numMeshes = vertices.size(), numVerts, numFaces, numTemplateJoints = templateJoints.size(), templateLen = templateVertexData.size(), originJointInds[numOrigins] = { 0, 0, 0 }, updatedOrigins[numOrigins] = { 0, 0, 0 };
 	vector<vector<unsigned int>> jointRelations = getJointRelations(templateJoints, joints);
-	vector<VertexGlobal> vertsG;
+	vector<vector<VertexGlobal>> vertsG;
 	// Make sure we got valid relations and get the global vertices
-	valid = (jointRelations.size() != 0) && getVerticesGlobal(joints, vertices, vertsG);
+	valid = (numMeshes == faces.size()) && (jointRelations.size() != 0) && getVerticesGlobal(joints, vertices, vertsG);
+	// Intialize the number of faces and vertices
+	if (valid && meshInd < numMeshes)
+	{
+		numFaces = faces[meshInd].size();
+		numVerts = vertices[meshInd].size();
+	}
+	else
+	{
+		numFaces = 0;
+		numVerts = 0;
+	}
 	// Parse the template vertex data
 	while (valid && (readIndex + 3) < templateLen)
 	{
@@ -7572,12 +9294,27 @@ bool updateRigging(vector<JointRelative> joints, vector<JointRelative> templateJ
 			for (unsigned int i = 0; i < numTemplateVerts && (readIndex + 47) < templateLen; i++)
 			{
 				// Extract vertex i from the template subsection
-				if (faceInd < numFaces)
+				if (faceInd >= numFaces)
 				{
-					Face f = faces[faceInd];
+					faceInd = 0;
+					meshInd++;
+					if (meshInd < numMeshes)
+					{
+						numFaces = faces[meshInd].size();
+						numVerts = vertices[meshInd].size();
+					}
+					else
+					{
+						numFaces = 0;
+						numVerts = 0;
+					}
+				}
+				if (meshInd < numMeshes && faceInd < numFaces)
+				{
+					Face f = faces[meshInd][faceInd];
 					if (faceInd > 0 && vertexIndInd == 0)
 					{
-						Face fp = faces[faceInd - 1];
+						Face fp = faces[meshInd][faceInd - 1];
 						if (fp.vertexIndices[1] == f.vertexIndices[0] && fp.vertexIndices[2] == f.vertexIndices[1])
 						{
 							vertexIndInd = 2;
@@ -7731,8 +9468,8 @@ vector<vector<unsigned int>> getJointRelations(vector<JointRelative> jointsI, ve
 	vector<vector<unsigned int>> relations;
 	relations.reserve(2);
 	// Convert the joints to relative vertices
-	vector<VertexRelative> jir = convertJointsToVerts(jointsI), jvr = convertJointsToVerts(jointsJ);
-	vector<VertexGlobal> jig, jvg;
+	vector<vector<VertexRelative>> jir = convertJointsToVerts(jointsI), jvr = convertJointsToVerts(jointsJ);
+	vector<vector<VertexGlobal>> jig, jvg;
 	// Convert the relative vertices to the global frame of reference
 	if (getVerticesGlobal(jointsI, jir, jig) && getVerticesGlobal(jointsJ, jvr, jvg))
 	{
@@ -7756,7 +9493,7 @@ vector<vector<unsigned int>> getJointRelations(vector<JointRelative> jointsI, ve
 			for (unsigned int j = 0; j < numJointsJ; j++)
 			{
 				// Compare the vertices
-				if ((relations[0][i] == numJointsJ) && (relations[1][j] == numJointsI) && compareVertices(jig[i], jvg[j], threshold) && compareVertices(jir[i], jvr[j], threshold))
+				if ((relations[0][i] == numJointsJ) && (relations[1][j] == numJointsI) && compareVertices(jig[0][i], jvg[0][j], threshold) && compareVertices(jir[0][i], jvr[0][j], threshold))
 				{
 					// They match, so store the relation and break from the inner loop
 					relations[0][i] = j;
@@ -7848,8 +9585,9 @@ bool readTexture(string filename, Texture &t)
 			// Initialize the texture with known values
 			t.width = width;
 			t.height = height;
-			t.wExp = 0;
-			t.hExp = 0;
+			t.wExp = 7;
+			t.hExp = 7;
+			/*
 			while ((t.width >> t.wExp) > 1)
 			{
 				t.wExp++;
@@ -7858,12 +9596,14 @@ bool readTexture(string filename, Texture &t)
 			{
 				t.hExp++;
 			}
+			*/
 			p.numColors = 0;
 			// For each pixel
 			for (unsigned int i = 0; i < rawData.size(); i += 4)
 			{
 				// Store this pixel's color values
-				unsigned char r = rawData[i], g = rawData[i + 1], b = rawData[i + 2], a = rawData[i + 3], j;
+				unsigned char r = rawData[i], g = rawData[i + 1], b = rawData[i + 2], a = rawData[i + 3];
+				unsigned short j;
 				// Check the palette for this color
 				for (j = 0; j < p.numColors; j++)
 				{
@@ -7871,7 +9611,7 @@ bool readTexture(string filename, Texture &t)
 					if (r == p.r[j] && g == p.g[j] && b == p.b[j] && a == p.a[j])
 					{
 						// Add the index
-						inds.push_back(j);
+						inds.push_back((unsigned char)j);
 						break;
 					}
 				}
@@ -7884,7 +9624,7 @@ bool readTexture(string filename, Texture &t)
 					p.a.push_back(a);
 					p.numColors++;
 					// Add the index
-					inds.push_back(j);
+					inds.push_back((unsigned char)j);
 				}
 				else if (j == p.numColors)
 				{
@@ -8123,69 +9863,94 @@ vector<MsetStaticAnimation> getMsetAnimations(string raw)
 	  * Create a graph where each origin joint is a node and each vertex represents an edge
 	    Find a path to visit every node, and then sort thebased on that path
 */
-vector<Face> sortFaces(vector<Face> faces, vector<VertexRelative> verts)
+vector<vector<Face>> sortFaces(vector<vector<Face>> faces, vector<vector<VertexRelative>> verts)
 {
 	// Create a copy of faces
-	vector<Face> sorted = faces;
-	vector<FaceEx> toSort;
-	vector<unsigned int> minJointVertInds;
+	vector<vector<Face>> sorted = faces;
+	vector<vector<FaceEx>> toSort;
+	vector<vector<unsigned int>> minJointVertInds;
 	// Get the number of faces
-	unsigned int numFaces = faces.size();
-	// For each face...
-	for (unsigned int i = 0; i < numFaces; i++)
+	unsigned int numMeshes = faces.size(), numFaces;
+	if (numMeshes == verts.size())
 	{
-		// Get face i
-		Face f = faces[i];
-		// Initialize the minimum joint vertex index to 0
-		minJointVertInds.push_back(0);
-		// Check vertices 1 and 2 to see if they have smaller joint indices than vertex 0
-		for (unsigned int j = 1; j < numVertsPerFace; j++)
+		// For each mesh...
+		for (unsigned int i = 0; i < numMeshes; i++)
 		{
-			if (verts[f.vertexIndices[j]] < verts[f.vertexIndices[minJointVertInds[i]]])
+			// Get the number of faces
+			numFaces = faces[i].size();
+			toSort.push_back(vector<FaceEx>());
+			minJointVertInds.push_back(vector<unsigned int>());
+			toSort.reserve(numFaces);
+			minJointVertInds.reserve(numFaces);
+			// For each face...
+			for (unsigned int j = 0; j < numFaces; j++)
 			{
-				minJointVertInds[i] = j;
-			}
-		}
-		// Shift the order of the vertices so that the minimum vertex is listed first while maintaining the orientation
-		for (unsigned int j = 0; j < numVertsPerFace; j++)
-		{
-			sorted[i].vertexIndices[j] = faces[i].vertexIndices[(minJointVertInds[i] + j) % numVertsPerFace];
-		}
-		// Check if vertex 2 has a smaller origin joint index than vertex 1
-		if (verts[sorted[i].vertexIndices[1]] > verts[sorted[i].vertexIndices[2]])
-		{
-			// It does so swap the orientation so that the origin joint indices are in ascending order
-			unsigned int temp = sorted[i].vertexIndices[1];
-			sorted[i].vertexIndices[1] = sorted[i].vertexIndices[2];
-			sorted[i].vertexIndices[2] = temp;
-			if (sorted[i].orientation == CLOCKWISE)
-			{
-				sorted[i].orientation = COUNTERCLOCKWISE;
-			}
-			else if (sorted[i].orientation == COUNTERCLOCKWISE)
-			{
-				sorted[i].orientation = CLOCKWISE;
-			}
-		}
-	}
-	// Convert the faces to the explicit form
-	if (getFacesEx(sorted, verts, toSort))
-	{
-		// Sort the faces
-		std::sort(toSort.begin(), toSort.end());
-		// Convert the faces back to the general form
-		if (getFaces(toSort, verts, sorted))
-		{
-			// Reset all the faces to a clockwise orientation
-			for (unsigned int i = 0; i < numFaces; i++)
-			{
-				if (sorted[i].orientation == CLOCKWISE)
+				// Get face j
+				Face f = faces[i][j];
+				// Initialize the minimum joint vertex index to 0
+				minJointVertInds[i].push_back(0);
+				// Check vertices 1 and 2 to see if they have smaller joint indices than vertex 0
+				for (unsigned int k = 1; k < numVertsPerFace; k++)
 				{
-					unsigned int temp = sorted[i].vertexIndices[1];
-					sorted[i].vertexIndices[1] = sorted[i].vertexIndices[2];
-					sorted[i].vertexIndices[2] = temp;
-					sorted[i].orientation = COUNTERCLOCKWISE;
+					if (verts[i][f.vertexIndices[k]] < verts[i][f.vertexIndices[minJointVertInds[i][j]]])
+					{
+						minJointVertInds[i][j] = k;
+					}
 				}
+				// Shift the order of the vertices so that the minimum vertex is listed first while maintaining the orientation
+				for (unsigned int k = 0; k < numVertsPerFace; k++)
+				{
+					sorted[i][j].vertexIndices[k] = faces[i][j].vertexIndices[(minJointVertInds[i][j] + k) % numVertsPerFace];
+				}
+				// Check if vertex 2 has a smaller origin joint index than vertex 1
+				if (verts[i][sorted[i][j].vertexIndices[1]] > verts[i][sorted[i][j].vertexIndices[2]])
+				{
+					// It does so swap the orientation so that the origin joint indices are in ascending order
+					unsigned int temp = sorted[i][j].vertexIndices[1];
+					sorted[i][j].vertexIndices[1] = sorted[i][j].vertexIndices[2];
+					sorted[i][j].vertexIndices[2] = temp;
+					if (sorted[i][j].orientation == CLOCKWISE)
+					{
+						sorted[i][j].orientation = COUNTERCLOCKWISE;
+					}
+					else if (sorted[i][j].orientation == COUNTERCLOCKWISE)
+					{
+						sorted[i][j].orientation = CLOCKWISE;
+					}
+				}
+			}
+		}
+		// Convert the faces to the explicit form
+		if (getFacesEx(sorted, verts, toSort))
+		{
+			// Sort the faces
+			//std::sort(toSort.begin(), toSort.end());
+			for (unsigned int i = 0; i < numMeshes; i++)
+			{
+				std::sort(toSort[i].begin(), toSort[i].end());
+			}
+			// Convert the faces back to the general form
+			if (getFaces(toSort, verts, sorted))
+			{
+				// Reset all the faces to a clockwise orientation
+				for (unsigned int i = 0; i < numMeshes; i++)
+				{
+					numFaces = sorted[i].size();
+					for (unsigned int j = 0; j < numFaces; j++)
+					{
+						if (sorted[i][j].orientation == CLOCKWISE)
+						{
+							unsigned int temp = sorted[i][j].vertexIndices[1];
+							sorted[i][j].vertexIndices[1] = sorted[i][j].vertexIndices[2];
+							sorted[i][j].vertexIndices[2] = temp;
+							sorted[i][j].orientation = COUNTERCLOCKWISE;
+						}
+					}
+				}
+			}
+			else
+			{
+				sorted.clear();
 			}
 		}
 		else

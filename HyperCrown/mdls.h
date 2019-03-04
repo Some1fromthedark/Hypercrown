@@ -16,6 +16,9 @@ struct Palette;
 struct Texture;
 struct VertexGlobal;
 struct VertexRelative;
+struct PolygonCollection;
+struct PolygonSubCollection;
+struct TriangleList;
 
 // Include Standard Libraries
 #include<iomanip>
@@ -37,9 +40,9 @@ struct VertexRelative;
 // Include LodePNG Libraries
 #include"lodepng.h"
 
-#define COLINEAR			0
+#define COUNTERCLOCKWISE	0
 #define CLOCKWISE			1
-#define COUNTERCLOCKWISE	2
+#define COLINEAR			2
 
 #include"matmul.h"
 #include"progDetails.h"
@@ -47,61 +50,77 @@ struct VertexRelative;
 using namespace std;
 
 // Prototype Functions
-bool assimpTest();
+bool binaryFileRead(string filename, string &dat);
 string convertMesh(string raw, string inputFormat, string outputFormat, AddInfo optionalVals);
-string convertSkeleton(string raw, string format = ".obj", unsigned int maxJoints = UINT_MAX);
-string convertMeshToDae(vector<JointRelative> joints, vector<VertexGlobal> verts, vector<Face> faces, vector<Animation> anims, float adjustments[], float max, string name = "model");
-string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> verts, vector<Face> faces, float adjustments[], float max);
-string convertMeshToMdls(vector<JointRelative> joints, vector<VertexRelative> verts, vector<Face> faces, string templateRigData, string templateVertexData, float adjustments[], float max);
-string convertMeshToObj(vector<VertexGlobal> verts, vector<Face> faces, float adjustments[], float max, string mtlName = "");
-string convertMeshToWpn(vector<VertexRelative> verts, vector<Face> faces, float adjustments[], float max);
-string convertMeshToWpn(vector<VertexRelative> verts, vector<Face> faces, string templateData, float adjustments[], float max);
-string convertSkeletonToObj(vector<JointRelative> joints, unsigned int maxJoints = UINT_MAX);
+string convertMeshToDae(vector<JointRelative> joints, vector<vector<VertexGlobal>> verts, vector<vector<Face>> faces, vector<Animation> anims, string name = "model");
+string convertMeshToMdls(vector<JointRelative> joints, vector<vector<VertexRelative>> verts, vector<vector<Face>> faces);
+string convertMeshToMdls(vector<JointRelative> joints, vector<vector<VertexRelative>> verts, vector<vector<Face>> faces, string templateRigData, string templateVertexData);
+string convertMeshToObj(vector<vector<VertexGlobal>> verts, vector<vector<Face>> faces, string mtlName = "");
+string convertMeshToWpn(vector<vector<VertexRelative>> verts, vector<vector<Face>> faces);
+string convertMeshToWpn(vector<vector<VertexRelative>> verts, vector<vector<Face>> faces, string templateData);
 string createMTL(unsigned int numTextures, string filenamePrefix);
 void textureToRaw(Texture t, unsigned char *&raw);
 vector<unsigned char> textureToRaw(Texture t);
 unsigned int getNumMdlsTextures(string raw);
 unsigned int getNumWpnTextures(string raw);
 vector<Texture> getMdlsTextures(string raw);
+vector<Texture> getMsetTextures(string raw, vector<Texture> mdlsTextures);
+vector<Texture> getTexaTextures(string raw, vector<Texture> referenceTextures);
 vector<Texture> getWpnTextures(string  raw);
 string setMdlsSpecialEffects(string raw, vector<string> effects);
 string setWpnSpecialEffects(string raw, vector<string> effects);
 string setMdlsTextures(string raw, vector<Texture> textures);
+string setMsetTextures(string raw, vector<Texture> msetTextures, vector<Texture> mdlsTextures, vector<unsigned int> referenceInds);
+string setTexaTextures(string raw, vector<Texture> texaTextures, vector<Texture> referenceTextures, vector<unsigned int > referenceInds);
 string setWpnTextures(string raw, vector<Texture> textures);
 vector<string> getMdlsSpecialEffects(string raw);
 vector<string> getWpnSpecialEffects(string raw);
+vector<string> getSPFXSpecialEffects(string raw);
+vector<Texture> getMagSpecialEffectTextures(string raw);
 vector<Texture> getMdlsSpecialEffectTextures(string raw);
 vector<Texture> getWpnSpecialEffectTextures(string raw);
-unsigned int getNumTextures(vector<VertexRelative> verts);
-unsigned int getNumTextures(vector<VertexGlobal> verts);
+vector<Texture> getSPFXTextures(string raw);
+unsigned int getNumTextures(vector<vector<VertexRelative>> verts);
+unsigned int getNumTextures(vector<vector<VertexGlobal>> verts);
 unsigned int getNumFacesOfTexture(vector<VertexRelative> verts, vector<Face> faces, unsigned int textureInd);
 unsigned int getNumFacesOfTexture(vector<VertexGlobal> verts, vector<Face> faces, unsigned int textureInd);
 unsigned int getFaceOrientation(Face f, vector<VertexGlobal> verts);
 unsigned int getRootJointIndex(vector<JointRelative> joints);
 bool getDaeJoints(const aiScene *scene, vector<JointRelative> &joints, unsigned int startDepth = 0);
-bool getDaeVerticesAndFaces(const aiScene *scene, vector<VertexGlobal> &verts, vector<Face> &faces, vector<JointRelative> joints = vector<JointRelative>());
+bool getDaeVerticesAndFaces(const aiScene *scene, vector<vector<VertexGlobal>> &verts, vector<vector<Face>> &faces, vector<JointRelative> joints = vector<JointRelative>());
 vector<JointRelative> getMdlsJoints(string raw, unsigned int maxJoints = UINT_MAX);
-bool getMdlsVerticesAndFaces(string raw, vector<JointRelative> joints, vector<VertexRelative> &verts, vector<Face> &faces);
-bool getWpnVerticesAndFaces(string raw, vector<VertexRelative> &verts, vector<Face> &faces);
-void removeDuplicateFaces(vector<Face> &faces, bool ignoreOrientation);
+bool getMdlsVerticesAndFaces(string raw, vector<JointRelative> joints, vector<vector<VertexRelative>> &verts, vector<vector<Face>> &faces);
+bool getMdlsShadowVerticesAndFaces(string raw, vector<JointRelative> joints, vector<vector<VertexRelative>> &verts, vector<vector<Face>> &faces);
+vector<JointRelative> getWpnJoints(string raw, unsigned int maxJoints = UINT_MAX);
+bool getWpnVerticesAndFaces(string raw, vector<vector<VertexRelative>> &verts, vector<vector<Face>> &faces);
+void removeDuplicateFaces(vector<vector<Face>> &faces, bool ignoreOrientation);
+void removeDuplicateVertices(vector<vector<VertexGlobal>> &verts, vector<vector<Face>> &faces);
 bool getJointGlobal(vector<JointRelative> joints, unsigned int jrInd, JointGlobal &jg);
 bool getJointsGlobal(vector<JointRelative> jr, vector<JointGlobal> &jg);
 bool getVertexGlobal(vector<JointRelative> joints, VertexRelative vr, VertexGlobal &vg);
-bool getVerticesGlobal(vector<JointRelative> joints, vector<VertexRelative> vr, vector<VertexGlobal> &vg);
+bool getVerticesGlobal(vector<JointRelative> joints, vector<vector<VertexRelative>> vr, vector<vector<VertexGlobal>> &vg);
 bool getVertexRelative(vector<JointRelative> joints, VertexGlobal vg, VertexRelative &vr);
-bool getVerticesRelative(vector<JointRelative> joints, vector<VertexGlobal> vg, vector<VertexRelative> &vr);
+bool getVerticesRelative(vector<JointRelative> joints, vector<vector<VertexGlobal>> vg, vector<vector<VertexRelative>> &vr);
 bool getFace(FaceEx fe, vector<VertexRelative> verts, Face &f);
-bool getFaces(vector<FaceEx> facesEx, vector<VertexRelative> verts, vector<Face> &faces);
+bool getFaces(vector<vector<FaceEx>> facesEx, vector<vector<VertexRelative>> verts, vector<vector<Face>> &faces);
 bool getFaceEx(Face f, vector<VertexRelative> verts, FaceEx &fe);
-bool getFacesEx(vector<Face> faces, vector<VertexRelative> verts, vector<FaceEx> &facesEx);
+bool getFacesEx(vector<vector<Face>> faces, vector<vector<VertexRelative>> verts, vector<vector<FaceEx>> &facesEx);
+bool combineMeshes(vector<vector<VertexRelative>> &verts, vector<vector<Face>> &faces);
+bool combineMeshes(vector<vector<VertexGlobal>> &verts, vector<vector<Face>> &faces);
+bool swapChirality(vector<JointRelative> &joints, vector<vector<VertexGlobal>> &verts);
+bool swapChirality(vector<JointRelative> &joints, vector<vector<VertexRelative>> &verts);
 bool getInverseBindMatrix(vector<JointRelative> joints, unsigned int jointIndex, vector<vector<float>> &ibm, float max = 1);
-bool getPolygonCollections(vector<VertexRelative> verts, vector<Face> faces, vector<vector<vector<vector<unsigned int>>>> &polygonCollections);
-unsigned int countFaces(vector<vector<vector<vector<unsigned int>>>> polygonCollections);
-bool compareFacesToPolygonCollections(vector<Face> faces, vector<vector<vector<vector<unsigned int>>>> polygonCollections);
+bool getPolygonCollections(vector<vector<VertexRelative>> verts, vector<vector<Face>> faces, vector<PolygonCollection> &polygonCollections);
+vector<PolygonCollection> condensePolygonCollections(vector<vector<VertexRelative>> verts, vector<PolygonCollection> polygonCollections);
+unsigned int countFaces(vector<PolygonCollection> polygonCollections);
+bool compareFacesToPolygonCollections(vector<vector<Face>> faces, vector<PolygonCollection> polygonCollections);
 VertexRelative convertJointToVert(JointRelative joint);
-vector<VertexRelative> convertJointsToVerts(vector<JointRelative> joints);
-bool normalizePosition(vector<VertexGlobal> vertices, float adjustments[], float &max);
-bool updateRigging(vector<JointRelative> joints, vector<JointRelative> templateJoints, vector<VertexRelative> vertices, vector<Face> faces, string templateVertexData, string &vertexData);
+vector<vector<VertexRelative>> convertJointsToVerts(vector<JointRelative> joints);
+bool normalizePosition(vector<vector<VertexGlobal>> vertices, vector<vector<VertexGlobal>> &vertexOutput, vector<JointRelative> joints = vector<JointRelative>(), vector<JointRelative> *jointOutput = NULL);
+bool normalizePosition(vector<vector<VertexRelative>> vertices, vector<vector<VertexRelative>> &vertexOutput, vector<JointRelative> joints = vector<JointRelative>(), vector<JointRelative> *jointOutput = NULL);
+bool flipUVCoordinates(vector<vector<VertexGlobal>> vertices, vector<vector<VertexGlobal>> &output);
+bool flipUVCoordinates(vector<vector<VertexRelative>> vertices, vector<vector<VertexRelative>> &output);
+bool updateRigging(vector<JointRelative> joints, vector<JointRelative> templateJoints, vector<vector<VertexRelative>> vertices, vector<vector<Face>> faces, string templateVertexData, string &vertexData);
 bool compareJoints(JointGlobal a, JointGlobal b, float threshold = 0.5f);
 bool compareVertices(VertexGlobal a, VertexGlobal b, float threshold = 0.5f);
 bool compareVertices(VertexRelative a, VertexRelative b, float threshold = 0.5f);
@@ -113,7 +132,7 @@ bool writeTexture(Texture t, string filename);
 vector<MsetStaticAnimation> getMsetAnimations(string raw);
 Animation convertMsetStaticAnimationToAnimation(vector<JointRelative> joints, MsetStaticAnimation mAnim);
 vector<Animation> convertMsetStaticAnimationsToAnimations(vector<JointRelative> joints, vector<MsetStaticAnimation> mAnims);
-vector<Face> sortFaces(vector<Face> faces, vector<VertexRelative> verts);
+vector<vector<Face>> sortFaces(vector<vector<Face>> faces, vector<vector<VertexRelative>> verts);
 // Prototype equivalence operators
 bool operator==(const VertexGlobal a, const VertexGlobal b);
 bool operator!=(const VertexGlobal a, const VertexGlobal b);
@@ -129,16 +148,17 @@ bool operator<=(const FaceEx a, const FaceEx b);
 bool operator>=(const FaceEx a, const FaceEx b);
 
 // Declare constants
-const unsigned int	numOrigins = 6,
-numDims = 3,
+const unsigned int numDims = 3,
 additionalVals = 2,
 numLinesPerVertex = 2,
 numVertsPerFace = 3,
 absoluteMaxJoints = 1023,
 loopTimeOut = 10000,
 menvHeaderLen = 64,
+mmtnHeaderLen = 16,
 mobjHeaderLen = 64,
-modelTableHeaderLen = 16;
+modelTableHeaderLen = 16,
+texaHeaderLen = 40;
 
 // Define structs
 struct AddInfo
@@ -251,4 +271,20 @@ struct FaceEx
 {
 	unsigned char orientation;
 	VertexRelative vertices[numVertsPerFace];
+};
+
+struct TriangleList
+{
+	unsigned char orientation;
+	vector<unsigned int> vertexIndices;
+};
+
+struct PolygonSubCollection
+{
+	vector<TriangleList> triangleLists;
+};
+
+struct PolygonCollection
+{
+	vector<PolygonSubCollection> subcollections;
 };

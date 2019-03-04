@@ -139,11 +139,18 @@
     <ClInclude Include="matmul.h" />
     <ClInclude Include="mdls.h" />
     <ClInclude Include="progDetails.h" />
+    <ClInclude Include="resource.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\..\..\..\..\Program Files\Assimp\assimp-4.1.0\code\assimp.vcxproj">
       <Project>{e80a9afb-fb2e-3912-8f28-00d930b23c0f}</Project>
     </ProjectReference>
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="HyperCrown.rc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="hypercrown.ico" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

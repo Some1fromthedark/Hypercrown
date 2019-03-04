@@ -1,13 +1,14 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
-    <LocalDebuggerCommandArguments>-m -r 1 -j Models\MDLS\Sora\xa_ex_0010.mdls Models\MDLS\Sora\xa_ex_0010_new2.dae Models\MDLS\Sora\xa_ex_0010_new2.mdls</LocalDebuggerCommandArguments>
+    <LocalDebuggerCommandArguments>-i -p Models\MDLS\Sora_FM xa_ex_0010.mset xa_ex_0010_new.mset xa_ex_0010.mdls xa_ex_0010-m0.png 6 xa_ex_0010-m1.png 6 xa_ex_0010-m2.png 6 xa_ex_0010-m3.png 6 xa_ex_0010-m4.png 6 xa_ex_0010-m5.png 6 xa_ex_0010-m6.png 6 xa_ex_0010-m7.png 6 xa_ex_0010-m8.png 6 xa_ex_0010-m9.png 6 xa_ex_0010-m10.png 6 xa_ex_0010-m11.png 6 xa_ex_0010-m12.png 6 xa_ex_0010-m13.png 6 xa_ex_0010-m14.png 6 xa_ex_0010-m15.png 6 xa_ex_0010-m17.png 6 xa_ex_0010-m18.png 6 xa_ex_0010-m19.png 6 xa_ex_0010-m20.png 6 xa_ex_0010-m21.png 6 xa_ex_0010-m22.png 6 xa_ex_0010-m23.png 6 xa_ex_0010-m24.png 6 xa_ex_0010-m25.png 6 xa_ex_0010-m26.png 6 xa_ex_0010-m27.png 6 xa_ex_0010-m28.png 6 xa_ex_0010-m29.png 6 xa_ex_0010-m30.png 6 xa_ex_0010-m31.png 6 xa_ex_0010-m32.png 6 xa_ex_0010-m33.png 6 xa_ex_0010-m34.png 6 xa_ex_0010-m35.png 6 xa_ex_0010-m36.png 6</LocalDebuggerCommandArguments>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <LocalDebuggerEnvironment>
     </LocalDebuggerEnvironment>
     <DebuggerFlavor>WindowsLocalDebugger</DebuggerFlavor>
-    <LocalDebuggerCommandArguments>-m -a Models\MDLS\Sora_FM\xa_ex_0010.mset Models\MDLS\Sora_FM\xa_ex_0010.mdls Models\MDLS\Sora_FM\SoraAnim.dae</LocalDebuggerCommandArguments>
+    <LocalDebuggerCommandArguments>
+    </LocalDebuggerCommandArguments>
   </PropertyGroup>
 </Project>
